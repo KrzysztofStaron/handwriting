@@ -7,7 +7,7 @@ from data import get_loader
 # (batch) dimension and avoid CPU/data stalls. Time steps stay sequential no
 # matter what, so huge batches are how you actually use the card.
 LEARNING_RATE = 0.001    # sigma clamp removed the divergence, so back to a healthy LR
-BATCH_SIZE = 256         # 4x larger -> 4x more parallel work per step, fits easily in 24GB
+BATCH_SIZE = 128         # 12GB 4070 + full BPTT over ~1200 steps -> 256 OOMs; 128 is safe
 EPOCHS = 80              # bigger batch = fewer updates/epoch, so give it more epochs
 GRAD_CLIP = 10
 USE_AMP = True           # bf16 autocast on Ada -> faster matmuls, safe exponent range
