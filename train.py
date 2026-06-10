@@ -28,11 +28,15 @@ loader, _ = get_loader(batch_size=BATCH_SIZE)
 
 amp = USE_AMP and DEVICE == "cuda"
 best_loss = float("inf")
+steps_per_epoch = len(loader)
+LOG_EVERY = 5            # print a line every N steps so you can see it's alive
+global_step = 0
 
 for epoch in range(EPOCHS):
     epoch_loss = 0.0
     n = 0
     for x, y, mask in loader:
+        global_step += 1
         x = x.to(DEVICE, non_blocking=True)
         y = y.to(DEVICE, non_blocking=True)
         mask = mask.to(DEVICE, non_blocking=True)
@@ -50,10 +54,14 @@ for epoch in range(EPOCHS):
         epoch_loss += loss.item()
         n += 1
 
+        if n % LOG_EVERY == 0 or n == 1:
+            print(f"  epoch {epoch+1}/{EPOCHS}  step {n}/{steps_per_epoch}  "
+                  f"(global {global_step})  loss: {loss.item():.4f}", flush=True)
+
     scheduler.step()
     avg = epoch_loss / n
     lr = scheduler.get_last_lr()[0]
-    print(f"epoch {epoch+1}/{EPOCHS}  avg_loss: {avg:.4f}  lr: {lr:.2e}")
+    print(f"epoch {epoch+1}/{EPOCHS}  avg_loss: {avg:.4f}  lr: {lr:.2e}", flush=True)
 
     if avg < best_loss:
         best_loss = avg
