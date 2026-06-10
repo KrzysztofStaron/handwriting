@@ -62,10 +62,12 @@ def collate(batch):
     return x, y, mask
 
 
-def get_loader(batch_size=32):
+def get_loader(batch_size=32, num_workers=4, pin_memory=True):
     strokes, sentences, std = load_data()
     dataset = StrokeDataset(strokes, std)
-    loader = DataLoader(dataset, batch_size=batch_size, shuffle=True, collate_fn=collate)
+    loader = DataLoader(dataset, batch_size=batch_size, shuffle=True,
+                        collate_fn=collate, num_workers=num_workers,
+                        pin_memory=pin_memory, persistent_workers=num_workers > 0)
     return loader, std
 
 
