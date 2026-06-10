@@ -6,10 +6,10 @@ from data import get_loader
 import math
 
 # Load checkpoint
-checkpoint_path = "10_752.pth"  # the lowest-loss checkpoint from training
+checkpoint_path = "best.pth"  # the lowest-loss checkpoint from training
 device = "mps" if torch.backends.mps.is_available() else "cpu"
 
-model = Handwritingmodel().to(device)
+model = HandwritingModel().to(device)
 model.load_state_dict(torch.load(checkpoint_path, map_location=device))
 model.eval()
 
