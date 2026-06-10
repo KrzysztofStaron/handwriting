@@ -9,7 +9,7 @@ import math
 checkpoint_path = "10_752.pth"  # the lowest-loss checkpoint from training
 device = "mps" if torch.backends.mps.is_available() else "cpu"
 
-model = HandwritpingModel().to(device)
+model = Handwritingmodel().to(device)
 model.load_state_dict(torch.load(checkpoint_path, map_location=device))
 model.eval()
 
