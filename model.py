@@ -78,6 +78,7 @@ def sequence_loss(out, y, mask):
 
     nll = (nll_xy + nll_pen) * mask
     loss = nll.sum() / mask.sum()
+    
     return loss
 
 

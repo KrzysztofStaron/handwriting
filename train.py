@@ -1,49 +1,39 @@
 import torch
-import torch.optim as optim
-from model import HandwritingModel, mdn_loss
+from model import HandwritingModel, sequence_loss
 from data import get_loader
 
-device = "cpu"  # or "cuda" if you have GPU
-model = HandwritingModel().to(device)
-optimizer = optim.Adam(model.parameters(), lr=0.001)
+LEARNING_RATE = 0.001
+BATCH_SIZE = 32
+EPOCHS = 1
 
-loader, std = get_loader(batch_size=32)
+if torch.cuda.is_available():
+    DEVICE = "cuda"
+elif torch.backends.mps.is_available():
+    DEVICE = "mps"
+else:
+    DEVICE = "cpu"
 
-num_epochs = 10
+model = HandwritingModel().to(DEVICE)
+optimizer = torch.optim.Adam(model.parameters(), lr=LEARNING_RATE)
+loader, _ = get_loader(batch_size=BATCH_SIZE)
 
-for epoch in range(num_epochs):
-    total_loss = 0
-    num_batches = 0
-
+step = 0
+for epoch in range(EPOCHS):
     for x, y, mask in loader:
-        x = x.to(device)
-        y = y.to(device)
-        mask = mask.to(device)
+        step += 1
 
-        # forward pass
+
+        x = x.to(DEVICE)
+        y = y.to(DEVICE)
+        mask = mask.to(DEVICE)
+        
         out, _ = model(x)
 
-        # compute loss
-        loss = mdn_loss(out, y, mask)
+        loss = sequence_loss(out, y, mask)
+        if step % 10 == 0 or step==1:
+            print(f"Step {step}, Loss: {loss.item()}")
 
-        # backward pass
         optimizer.zero_grad()
         loss.backward()
-
-        # gradient clipping (paper sec. 4.2: critical for stability)
         torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=10)
-
-        # update weights
         optimizer.step()
-
-        total_loss += loss.item()
-        num_batches += 1
-
-    avg_loss = total_loss / num_batches
-    print(f"epoch {epoch+1}/{num_epochs}  loss: {avg_loss:.4f}")
-
-    # save checkpoint
-    if (epoch + 1) % 5 == 0:
-        torch.save(model.state_dict(), f"checkpoint_epoch_{epoch+1}.pt")
-
-print("training done")
