@@ -32,8 +32,8 @@ def split_params(out):
     pi    = torch.softmax(rest[:, :, :, 0], dim=-1)  # weights, sum to 1
     mu_x  = rest[:, :, :, 1]                          # x means
     mu_y  = rest[:, :, :, 2]                          # y means
-    sig_x = torch.exp(rest[:, :, :, 3])               # x std devs, > 0
-    sig_y = torch.exp(rest[:, :, :, 4])               # y std devs, > 0
+    sig_x = torch.exp(rest[:, :, :, 3]).clamp(min=1e-2)  # x std devs, > 0
+    sig_y = torch.exp(rest[:, :, :, 4]).clamp(min=1e-2)  # y std devs, > 0
     rho   = torch.tanh(rest[:, :, :, 5])              # correlation, (-1, 1)
     pen   = torch.sigmoid(pen_logit)                  # pen_up probability
 
