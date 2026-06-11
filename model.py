@@ -78,7 +78,11 @@ def sequence_loss(out, y, mask):
 
     nll = (nll_xy + nll_pen) * mask
     loss = nll.sum() / mask.sum()
-    
+
     return loss
 
 
+# U -> Len of character sequence
+# C -> Character sequence
+# T -> Len of data sequence
+# x -> data sequence 
