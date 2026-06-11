@@ -7,7 +7,7 @@ from data import get_loader
 # constant LR. The only addition is the sigma clamp in model.py, which prevents
 # the end-of-training divergence the earlier run had.
 LEARNING_RATE = 0.001
-BATCH_SIZE = 64
+BATCH_SIZE = 128
 EPOCHS = 40              # plenty: breakthrough happened ~600 steps = ~6 epochs before
 GRAD_CLIP = 10
 
