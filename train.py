@@ -10,7 +10,7 @@ from generate import sample, save_plot, save_alignment
 # the end-of-training divergence the earlier run had.
 LEARNING_RATE = 0.001
 BATCH_SIZE = 64         # 8GB 4060 fits ~64 at full length; raise only with more VRAM
-EPOCHS = 40             # plenty: breakthrough happened ~600 steps = ~6 epochs before
+EPOCHS = 80             # final run: -1.788 was still descending at 40, so go further
 GRAD_CLIP = 10
 
 # FULL RUN: train on whole lines (no truncation) for final quality.
