@@ -77,13 +77,16 @@ def main():
             torch.save(model.state_dict(), "best.pth")
             print(f"  saved best.pth (avg_loss {avg:.4f})", flush=True)
 
-        # periodically SEE quality form: dump a sample + the alignment diagonal
+        # periodically SEE quality form AND keep the weights, so the final model can be
+        # chosen by EYE (alignment + sample) rather than by lowest loss alone -- loss
+        # does not track visual quality (cf. best-2: good loss, collapsed window).
         if (epoch + 1) % EVAL_EVERY == 0:
             model.eval()
             seq, phis = sample(model, EVAL_TEXT, stoi, DEVICE, temperature=0.4)
             save_plot(seq, std, f"samples/epoch{epoch+1:02d}.png",
                       f"'{EVAL_TEXT}'  epoch {epoch+1}")
             save_alignment(phis, EVAL_TEXT, f"samples/epoch{epoch+1:02d}_align.png")
+            torch.save(model.state_dict(), f"samples/epoch{epoch+1:02d}.pth")
             model.train()
 
     print(f"done. best avg_loss: {best_loss:.4f}")
