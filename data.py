@@ -33,19 +33,27 @@ class StrokeDataset(Dataset):
       target = points 0 .. T-1
     """
 
-    def __init__(self, strokes, sentences, stoi, std):
+    def __init__(self, strokes, sentences, stoi, std, max_len=None):
         self.std = std
         self.stoi = stoi
         self.seqs = []
         self.texts = []
 
-
         for s, sent in zip(strokes, sentences):
             s = s.astype(np.float32).copy()
             s[:, 1:] /= std                    # normalise offsets
             s = s[:, [1, 2, 0]]                # reorder to (dx, dy, pen_up)
-            self.seqs.append(torch.from_numpy(s))
             idx = [self.stoi[c] for c in sent]
+
+            # cap sequence length to keep the layer-1 loop short. Truncate the text
+            # proportionally so text/stroke alignment stays consistent (paper sec. 5.2
+            # trains on fixed-length chunks, not whole lines).
+            if max_len is not None and len(s) > max_len:
+                n_chars = max(1, round(len(idx) * max_len / len(s)))
+                s = s[:max_len]
+                idx = idx[:n_chars]
+
+            self.seqs.append(torch.from_numpy(s))
             self.texts.append(torch.tensor(idx, dtype=torch.long))
 
     def __len__(self):
@@ -86,10 +94,10 @@ def collate(batch, vocab_size):
     return x, y, mask, c, c_mask
 
 
-def get_loader(batch_size=32, num_workers=4, pin_memory=True):
+def get_loader(batch_size=32, num_workers=4, pin_memory=True, max_len=700):
     strokes, sentences, std = load_data()
     stoi = build_vocab(sentences)
-    dataset = StrokeDataset(strokes, sentences, stoi, std)
+    dataset = StrokeDataset(strokes, sentences, stoi, std, max_len=max_len)
     loader = DataLoader(dataset, batch_size=batch_size, shuffle=True,
                         collate_fn=partial(collate, vocab_size=len(stoi)),
                         num_workers=num_workers, pin_memory=pin_memory,
