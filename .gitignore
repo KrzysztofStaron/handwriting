@@ -9,5 +9,12 @@ wheels/
 # Virtual environments
 .venv
 
+# model weights live on Hugging Face (PanzerBread/handwriting), not git
 *.pth
+*.npz
 *.png
+# keep the comparison images in the repo
+!docs/*.png
+
+DEPLOY.md
+vocab.txt

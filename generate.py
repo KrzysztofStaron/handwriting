@@ -1,12 +1,14 @@
 import math
 import torch
 import numpy as np
-import matplotlib.pyplot as plt
 from model import HandwritingModel, split_params
-from data import get_loader
+
+# NOTE: matplotlib and data.get_loader are imported lazily (inside the functions
+# that need them) so the serving image can skip those deps entirely. Only the
+# training/debug plotters and the __main__ block use them.
 
 
-def load_model(device, ckpt="best.pth", stoi_path="stoi.pth"):
+def load_model(device, ckpt="best-4.pth", stoi_path="stoi.pth"):
     """Load a trained synthesis model and its vocab."""
     stoi = torch.load(stoi_path)
     model = HandwritingModel(vocab_size=len(stoi)).to(device)
@@ -15,12 +17,11 @@ def load_model(device, ckpt="best.pth", stoi_path="stoi.pth"):
     return model, stoi
 
 
-def sample(model, text, stoi, device, temperature=1.0, max_steps=2000):
-    """Generate handwriting for `text`, one point at a time.
+def sample_iter(model, text, stoi, device, temperature=1.0, max_steps=2000, tail_steps=25):
+    """Generator core: yield one pen point at a time as it is drawn.
 
-    Returns (seq, phis):
-      seq  : (steps, 3)  the (dx, dy, pen_up) trajectory
-      phis : (steps, U)  window attention over the text at each step (for Fig. 13)
+    Yields (dx, dy, pen_up, phi) per step, where phi is the (U,) window attention.
+    Used both by sample() (collects everything) and by the streaming API.
     """
     U = len(text)
     c = torch.zeros(1, U, len(stoi)).to(device)
@@ -29,10 +30,10 @@ def sample(model, text, stoi, device, temperature=1.0, max_steps=2000):
 
     x = torch.zeros(1, 1, 3).to(device)   # null start point
     hidden = None                          # fresh: pen at origin, window at char 0
-    pts, phis = [], []
+    reached_end_at = None                  # step where attention first hit the last char
 
     with torch.no_grad():
-        for _ in range(max_steps):
+        for t in range(max_steps):
             out, hidden, phi = model(x, c, c_mask, hidden)   # ONE step; hidden carries kappa
             phi = phi[0, 0]                                  # (U,) attention this step
 
@@ -49,19 +50,38 @@ def sample(model, text, stoi, device, temperature=1.0, max_steps=2000):
             dy = my + sy * (r * u1 + math.sqrt(max(1 - r**2, 1e-8)) * u2)
 
             pen_up = 1.0 if torch.rand(1).item() < pen[0, 0].item() else 0.0
-            pts.append([dx, dy, pen_up])
-            phis.append(phi.cpu().numpy())
             x = torch.tensor([[[dx, dy, pen_up]]]).to(device)    # feed the point back
+            yield dx, dy, pen_up, phi.cpu().numpy()
 
-            # stop once the window has slid onto the last character (paper sec. 5.2)
-            if phi.argmax().item() == U - 1:
+            # Stop heuristic. The window attention phi is the reliable signal (kappa
+            # is polluted by parked/unused mixture components). But don't quit the
+            # instant attention reaches the last char -- that gives it ~0 steps to be
+            # drawn. Instead, once it arrives, draw a grace period (~one character,
+            # the paper's ~25 steps/char) so the final letter is actually rendered.
+            if reached_end_at is None and phi.argmax().item() == U - 1:
+                reached_end_at = t
+            if reached_end_at is not None and t - reached_end_at >= tail_steps:
                 break
 
+
+def sample(model, text, stoi, device, temperature=1.0, max_steps=2000, tail_steps=25):
+    """Generate handwriting for `text`, collecting the whole trajectory.
+
+    Returns (seq, phis):
+      seq  : (steps, 3)  the (dx, dy, pen_up) trajectory
+      phis : (steps, U)  window attention over the text at each step (for Fig. 13)
+    """
+    pts, phis = [], []
+    for dx, dy, pen_up, phi in sample_iter(model, text, stoi, device,
+                                           temperature, max_steps, tail_steps):
+        pts.append([dx, dy, pen_up])
+        phis.append(phi)
     return torch.tensor(pts), np.array(phis)
 
 
 def save_plot(seq, std, path, title):
     """Denormalise -> integrate offsets -> split on pen lifts -> draw."""
+    import matplotlib.pyplot as plt
     xy = np.cumsum(seq[:, :2].numpy() * std, axis=0)
     pen_up = seq[:, 2].numpy()
     fig, ax = plt.subplots(figsize=(12, 3))
@@ -78,6 +98,7 @@ def save_plot(seq, std, path, title):
 
 def save_alignment(phis, text, path):
     """Plot the window weights phi(t, u) — the diagonal stripe of Fig. 13."""
+    import matplotlib.pyplot as plt
     fig, ax = plt.subplots(figsize=(12, 3))
     ax.imshow(phis.T, aspect="auto", origin="lower", cmap="Blues",
               interpolation="nearest")
@@ -90,13 +111,14 @@ def save_alignment(phis, text, path):
 
 
 if __name__ == "__main__":
+    from data import get_loader
     device = "cuda" if torch.cuda.is_available() else (
         "mps" if torch.backends.mps.is_available() else "cpu")
     model, stoi = load_model(device)
     _, std, _ = get_loader()   # normalisation factor used during training
 
-    text = "hello world"
-    for temp in [0.3, 0.5, 0.8]:
+    text = "Mam na imie Jan Maciej Json"
+    for temp in [0.0, 0.3, 0.5, 0.8]:
         seq, phis = sample(model, text, stoi, device, temperature=temp)
         save_plot(seq, std, f"sample_temp_{temp}.png", f"'{text}'  temperature={temp}")
     save_alignment(phis, text, "alignment.png")
