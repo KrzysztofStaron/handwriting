@@ -17,10 +17,13 @@ print(f"device: {DEVICE}")
 
 torch.backends.cudnn.benchmark = True
 
-model = HandwritingModel().to(DEVICE)
-optimizer = torch.optim.Adam(model.parameters(), lr=LEARNING_RATE)
+loader, _, stoi = get_loader(batch_size=BATCH_SIZE)
 
-loader, _ = get_loader(batch_size=BATCH_SIZE)
+# save the vocab so generate.py encodes text with the SAME char->id mapping
+torch.save(stoi, "stoi.pth")
+
+model = HandwritingModel(vocab_size=len(stoi)).to(DEVICE)
+optimizer = torch.optim.Adam(model.parameters(), lr=LEARNING_RATE)
 
 best_loss = float("inf")
 steps_per_epoch = len(loader)
@@ -30,13 +33,15 @@ global_step = 0
 for epoch in range(EPOCHS):
     epoch_loss = 0.0
     n = 0
-    for x, y, mask in loader:
+    for x, y, mask, c, c_mask in loader:
         global_step += 1
         x = x.to(DEVICE, non_blocking=True)
         y = y.to(DEVICE, non_blocking=True)
         mask = mask.to(DEVICE, non_blocking=True)
+        c = c.to(DEVICE, non_blocking=True)
+        c_mask = c_mask.to(DEVICE, non_blocking=True)
 
-        out, _ = model(x)
+        out, _, _ = model(x, c, c_mask)
         loss = sequence_loss(out, y, mask)
 
         optimizer.zero_grad(set_to_none=True)
