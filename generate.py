@@ -5,19 +5,17 @@ import matplotlib.pyplot as plt
 from model import HandwritingModel, split_params
 from data import get_loader
 
-device = "mps" if torch.backends.mps.is_available() else "cpu"
 
-# the vocab must be the SAME mapping used during training (saved by train.py)
-stoi = torch.load("stoi.pth")
-
-model = HandwritingModel(vocab_size=len(stoi)).to(device)
-model.load_state_dict(torch.load("best.pth", map_location=device))
-model.eval()
-
-_, std, _ = get_loader()   # normalisation factor used during training
+def load_model(device, ckpt="best.pth", stoi_path="stoi.pth"):
+    """Load a trained synthesis model and its vocab."""
+    stoi = torch.load(stoi_path)
+    model = HandwritingModel(vocab_size=len(stoi)).to(device)
+    model.load_state_dict(torch.load(ckpt, map_location=device))
+    model.eval()
+    return model, stoi
 
 
-def sample(text, temperature=1.0, max_steps=2000):
+def sample(model, text, stoi, device, temperature=1.0, max_steps=2000):
     """Generate handwriting for `text`, one point at a time.
 
     Returns (seq, phis):
@@ -55,15 +53,14 @@ def sample(text, temperature=1.0, max_steps=2000):
             phis.append(phi.cpu().numpy())
             x = torch.tensor([[[dx, dy, pen_up]]]).to(device)    # feed the point back
 
-            # stop once the window has slid onto the last character (paper sec. 5.2):
-            # the model has finished reading the text.
+            # stop once the window has slid onto the last character (paper sec. 5.2)
             if phi.argmax().item() == U - 1:
                 break
 
     return torch.tensor(pts), np.array(phis)
 
 
-def save_plot(seq, path, title):
+def save_plot(seq, std, path, title):
     """Denormalise -> integrate offsets -> split on pen lifts -> draw."""
     xy = np.cumsum(seq[:, :2].numpy() * std, axis=0)
     pen_up = seq[:, 2].numpy()
@@ -93,8 +90,13 @@ def save_alignment(phis, text, path):
 
 
 if __name__ == "__main__":
+    device = "cuda" if torch.cuda.is_available() else (
+        "mps" if torch.backends.mps.is_available() else "cpu")
+    model, stoi = load_model(device)
+    _, std, _ = get_loader()   # normalisation factor used during training
+
     text = "hello world"
     for temp in [0.3, 0.5, 0.8]:
-        seq, phis = sample(text, temperature=temp)
-        save_plot(seq, f"sample_temp_{temp}.png", f"'{text}'  temperature={temp}")
+        seq, phis = sample(model, text, stoi, device, temperature=temp)
+        save_plot(seq, std, f"sample_temp_{temp}.png", f"'{text}'  temperature={temp}")
     save_alignment(phis, text, "alignment.png")
