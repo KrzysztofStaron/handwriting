@@ -11,11 +11,14 @@ class HandwritingModel(nn.Module):
         self.hidden_size = hidden_size
         self.vocab_size = vocab_size
 
-        # layer 1 sees: (dx,dy,pen)=3  +  the window w (size = vocab_size)
+        # layer 1 MUST be stepped one timestep at a time: it produces the window,
+        # which feeds back into layer 1 at the next step (eq. 52). Hence LSTMCell.
         self.lstm1 = nn.LSTMCell(3 + vocab_size, hidden_size)
-        # upper layers see: input(3) + lower hidden + window   (skip connections, eq 53)
-        self.lstm2 = nn.LSTMCell(3 + hidden_size + vocab_size, hidden_size)
-        self.lstm3 = nn.LSTMCell(3 + hidden_size + vocab_size, hidden_size)
+        # layers 2/3 only CONSUME the window, so once the layer-1 loop has produced
+        # the full (h1, w) sequences these can run as one fused cuDNN pass over time.
+        # input(3) + lower hidden + window   (skip connections, eq 53)
+        self.lstm2 = nn.LSTM(3 + hidden_size + vocab_size, hidden_size, batch_first=True)
+        self.lstm3 = nn.LSTM(3 + hidden_size + vocab_size, hidden_size, batch_first=True)
 
         self.window_fc = nn.Linear(hidden_size, 3 * K)   # eq 48: the ONLY window weights
         # output reads from all 3 layers (skip connections to output)
@@ -52,25 +55,32 @@ class HandwritingModel(nn.Module):
         dev = x.device
 
         if hidden is None:
-            z = lambda: torch.zeros(B, H, device=dev)
-            h1, c1, h2, c2, h3, c3 = z(), z(), z(), z(), z(), z()
+            h1 = torch.zeros(B, H, device=dev)
+            c1 = torch.zeros(B, H, device=dev)
             w = torch.zeros(B, V, device=dev)           # no window yet at t=0
             kappa = torch.zeros(B, K, device=dev)       # window starts at text position 0
+            s2 = s3 = None                              # cuDNN inits layer 2/3 states to 0
         else:
-            h1, c1, h2, c2, h3, c3, w, kappa = hidden
+            h1, c1, s2, s3, w, kappa = hidden
 
-        outs, phis = [], []
+        # --- sequential part: layer 1 + window (the only true per-step recurrence) ---
+        h1_seq, w_seq, phis = [], [], []
         for t in range(T):
             xt = x[:, t]                                          # (B, 3)
             h1, c1 = self.lstm1(torch.cat([xt, w], 1), (h1, c1))  # layer 1 reads w_{t-1}
             w, kappa, phi = self.compute_window(h1, c, c_mask, kappa)  # new window w_t
-            h2, c2 = self.lstm2(torch.cat([xt, h1, w], 1), (h2, c2))   # upper layers read w_t
-            h3, c3 = self.lstm3(torch.cat([xt, h2, w], 1), (h3, c3))
-            outs.append(self.fc(torch.cat([h1, h2, h3], 1)))     # (B, 121)
+            h1_seq.append(h1)
+            w_seq.append(w)
             phis.append(phi)
+        h1_seq = torch.stack(h1_seq, dim=1)                       # (B, T, H)
+        w_seq = torch.stack(w_seq, dim=1)                         # (B, T, V)
 
-        out = torch.stack(outs, dim=1)                           # (B, T, 121)
-        hidden = (h1, c1, h2, c2, h3, c3, w, kappa)
+        # --- batched part: layers 2/3 + output run over the whole sequence at once ---
+        h2_seq, s2 = self.lstm2(torch.cat([x, h1_seq, w_seq], -1), s2)
+        h3_seq, s3 = self.lstm3(torch.cat([x, h2_seq, w_seq], -1), s3)
+        out = self.fc(torch.cat([h1_seq, h2_seq, h3_seq], -1))    # (B, T, 121)
+
+        hidden = (h1, c1, s2, s3, w, kappa)
         return out, hidden, torch.stack(phis, dim=1)             # phis: (B, T, U)
 
 
