@@ -1,0 +1,5 @@
+# Numpy serving backend -- NO torch. numpy bundles OpenBLAS, so the forward pass
+# is BLAS-backed; cold start is ~instant (no 200MB torch runtime to import).
+numpy
+flask
+gunicorn
