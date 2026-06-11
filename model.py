@@ -21,6 +21,15 @@ class HandwritingModel(nn.Module):
         self.lstm3 = nn.LSTM(3 + hidden_size + vocab_size, hidden_size, batch_first=True)
 
         self.window_fc = nn.Linear(hidden_size, 3 * K)   # eq 48: the ONLY window weights
+        # Safeguard against window collapse. kappa advances by exp(kappa_hat) each step
+        # (eq. 51). With the default ~0 bias that's exp(0)=1 char/step at init -- ~25x
+        # too fast -- which lets kappa run away to infinity, w->0, and the net ignores
+        # the text (collapses to unconditional generation; cf. the failed best-2 run).
+        # Bias the kappa term negative so it STARTS slow (~exp(-3)=0.05 char/step,
+        # close to the true U/T rate); the network is still free to learn faster.
+        with torch.no_grad():
+            self.window_fc.bias[2 * K:].fill_(-3.0)
+
         # output reads from all 3 layers (skip connections to output)
         self.fc = nn.Linear(3 * hidden_size, 1 + M * 6)
 
