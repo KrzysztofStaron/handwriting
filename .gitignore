@@ -23,3 +23,6 @@ vocab.txt
 drawing.mp4
 *.mp3
 variants/
+collector/
+.claude
+collected/
