@@ -117,7 +117,7 @@ if __name__ == "__main__":
     model, stoi = load_model(device)
     _, std, _ = get_loader()   # normalisation factor used during training
 
-    text = "Mam na imie Jan Maciej Json"
+    text = "Hello world"
     for temp in [0.0, 0.3, 0.5, 0.8]:
         seq, phis = sample(model, text, stoi, device, temperature=temp)
         save_plot(seq, std, f"sample_temp_{temp}.png", f"'{text}'  temperature={temp}")

@@ -18,3 +18,8 @@ wheels/
 
 DEPLOY.md
 vocab.txt
+
+# demo artifacts — local only
+drawing.mp4
+*.mp3
+variants/
