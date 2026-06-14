@@ -31,6 +31,7 @@ from render_drawing_mp4 import (
     STROKE_WIDTH,
     TEMPS,
     build_scenery,
+    collect_strokes,
     fit_transform,
     load_font,
     load_model,
@@ -44,27 +45,7 @@ THUMB_W, THUMB_H = 420, 240
 def generate_strokes(model, stoi, std, text, temperature, seed):
     rng = np.random.default_rng(seed)
     c, c_mask = onehot(text, stoi)
-    cx = cy = 0.0
-    xs, ys = [0.0], [0.0]
-    completed = []
-    current = []
-
-    for dx, dy, pen_up, _phi in model.sample_iter(
-        c, c_mask, temperature=temperature, rng=rng,
-    ):
-        cx += dx * std
-        cy += dy * std
-        xs.append(cx)
-        ys.append(cy)
-        current.append((cx, cy))
-        if pen_up:
-            if len(current) >= 2:
-                completed.append(current[:])
-            current = []
-
-    if len(current) >= 2:
-        completed.append(current[:])
-    return completed, xs, ys
+    return collect_strokes(model, c, c_mask, std, temperature, rng=rng)
 
 
 def draw_strokes_finished(draw, completed, xs, ys):
@@ -108,18 +89,9 @@ def render_thumb(text, line_i, temperature, completed, xs, ys):
                            radius=8, fill=PANEL_BG, outline=PANEL_BORDER)
 
     if xs:
-        pad = 24
-        min_x, max_x = min(xs), max(xs)
-        min_y, max_y = min(ys), max(ys)
-        span_x = max(max_x - min_x, 1.0)
-        span_y = max(max_y - min_y, 1.0)
-        area_w = THUMB_W - 2 * pad
-        area_h = THUMB_H - 56
-        scale = min(area_w / span_x, area_h / span_y) * 0.85
-        ox = pad + (area_w - span_x * scale) / 2
-        oy = 20 + (area_h - span_y * scale) / 2
-        tx = lambda x: ox + (x - min_x) * scale
-        ty = lambda y: oy + (max_y - y) * scale
+        # Leave room for header and footer text labels
+        pad, margin = 24, 0.85
+        tx, ty = fit_transform(xs, ys, panel=(pad, 20, THUMB_W - pad, THUMB_H - 36), pad=0, margin=margin)
         for stroke in completed:
             if len(stroke) < 2:
                 continue
