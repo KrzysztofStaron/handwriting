@@ -30,7 +30,8 @@ class HandwritingModel(nn.Module):
         with torch.no_grad():
             self.window_fc.bias[2 * K:].fill_(-3.0)
 
-        # output reads from all 3 layers (skip connections to output)
+        # output reads from all 3 layers (skip connections to output).
+        # 1 Bernoulli (pen_up) + M*6 mixture params.
         self.fc = nn.Linear(3 * hidden_size, 1 + M * 6)
 
     def compute_window(self, h1, c, c_mask, kappa_prev):
@@ -41,12 +42,21 @@ class HandwritingModel(nn.Module):
         c_mask     : (B, U)      1 = real char, 0 = padding
         kappa_prev : (B, K)      window location from the previous timestep
 
-        returns w (B, V), kappa (B, K), phi (B, U).
+        returns w (B, V), kappa (B, K), phi (B, U), phi_end (B,).
+        phi_end is phi evaluated at the PHANTOM position u=U (one past the last
+        char); the sampler uses it for the paper's stop criterion (sec. 5.3).
         """
         p = self.window_fc(h1)                          # (B, 3K)  eq 48
         alpha = torch.exp(p[:, :K])                     # (B, K)   eq 49
         beta  = torch.exp(p[:, K:2 * K])                # (B, K)   eq 50
         kappa = kappa_prev + torch.exp(p[:, 2 * K:])    # (B, K)   eq 51 (slides forward)
+
+        # Inference-only: re-sharpen the window. Over long words the model widens beta
+        # (broad Gaussians) to hedge growing kappa uncertainty, so attention smears
+        # across several characters and the model draws an ambiguous/wrong letter.
+        # Scaling beta up narrows the window back onto a single char. =1.0 -> identity
+        # (training is unaffected); set higher at generation time.
+        beta = beta * getattr(self, "window_sharpen", 1.0)
 
         U = c.shape[1]
         u = torch.arange(U, device=c.device).float()    # (U,) character positions
@@ -56,7 +66,14 @@ class HandwritingModel(nn.Module):
                ).sum(dim=1)                             # (B, U)
         phi = phi * c_mask                              # ignore padded text positions
         w = torch.bmm(phi.unsqueeze(1), c).squeeze(1)   # (B, V)   eq 47
-        return w, kappa, phi
+
+        # phi at the PHANTOM position u=U, one past the last character (positions are
+        # 0-indexed 0..U-1, so U is the paper's "U+1"). The paper's stop criterion
+        # (sec. 5.3): sampling ends once this outweighs phi at every real char, i.e.
+        # the soft window has slid off the end of the text. Computed here so the
+        # sampler gets it for free; it plays no role in training.
+        phi_end = (alpha * torch.exp(-beta * (kappa - float(U)) ** 2)).sum(dim=1)  # (B,)
+        return w, kappa, phi, phi_end
 
     def forward(self, x, c, c_mask, hidden=None):
         B, T, _ = x.shape
@@ -73,14 +90,15 @@ class HandwritingModel(nn.Module):
             h1, c1, s2, s3, w, kappa = hidden
 
         # --- sequential part: layer 1 + window (the only true per-step recurrence) ---
-        h1_seq, w_seq, phis = [], [], []
+        h1_seq, w_seq, phis, phi_ends = [], [], [], []
         for t in range(T):
             xt = x[:, t]                                          # (B, 3)
             h1, c1 = self.lstm1(torch.cat([xt, w], 1), (h1, c1))  # layer 1 reads w_{t-1}
-            w, kappa, phi = self.compute_window(h1, c, c_mask, kappa)  # new window w_t
+            w, kappa, phi, phi_end = self.compute_window(h1, c, c_mask, kappa)  # new window w_t
             h1_seq.append(h1)
             w_seq.append(w)
             phis.append(phi)
+            phi_ends.append(phi_end)
         h1_seq = torch.stack(h1_seq, dim=1)                       # (B, T, H)
         w_seq = torch.stack(w_seq, dim=1)                         # (B, T, V)
 
@@ -90,14 +108,19 @@ class HandwritingModel(nn.Module):
         out = self.fc(torch.cat([h1_seq, h2_seq, h3_seq], -1))    # (B, T, 121)
 
         hidden = (h1, c1, s2, s3, w, kappa)
-        return out, hidden, torch.stack(phis, dim=1)             # phis: (B, T, U)
+        return (out, hidden,
+                torch.stack(phis, dim=1),        # phis:     (B, T, U)
+                torch.stack(phi_ends, dim=1))    # phi_ends: (B, T)
 
 
 
 # We take the last linear layer and split it into params of Gaussians (eq. 18-22).
 def split_params(out):
-    """Split raw outputs into mixture parameters (eq. 18-22)."""
-    
+    """Split raw outputs into mixture parameters (eq. 18-22).
+
+    Output layout: [0]=pen_up logit, [1:]=M*6 mixture.
+    """
+
     pen_logit = out[:, :, 0]
     rest = out[:, :, 1:].reshape(*out.shape[:2], M, 6)
 
@@ -135,10 +158,6 @@ def sequence_loss(out, y, mask):
     dy = y[:, :, 1].unsqueeze(-1)
     pen_up = y[:, :, 2]
 
-
-    # ? j - the amount of gausians ig
-    # e_t - pen
-    # eveything but pen is an array of gausian paramneters
     pi, mu_x, mu_y, sig_x, sig_y, rho, pen = split_params(out)
 
     gauss = gaussian_2d(dx, dy, mu_x, mu_y, sig_x, sig_y, rho)
@@ -152,6 +171,25 @@ def sequence_loss(out, y, mask):
     loss = nll.sum() / mask.sum()
 
     return loss
+
+
+def window_entropy(phis, mask, eps=1e-8):
+    """Mean entropy of the soft window over the text axis (a sharpness measure).
+
+    phis : (B, T, U)  the per-step window weights (already masked to valid chars
+                      by compute_window). Low entropy = attention concentrated on a
+                      SINGLE character = sharp; high entropy = smeared across many.
+
+    Added to the loss as a regulariser: minimising it pushes the window to commit to
+    one character per step, which is what fails late in long words (the window widens
+    to hedge, so the conditioning becomes a blend and the model draws a wrong letter).
+    Because a sharp window only LOWERS the main loss when it points at the RIGHT char,
+    this jointly pressures beta (width) and kappa (position) to improve together --
+    unlike the inference-time beta scaling, which sharpens blindly.
+    """
+    p = phis / (phis.sum(dim=-1, keepdim=True) + eps)     # (B, T, U) distribution over text
+    H = -(p * torch.log(p + eps)).sum(dim=-1)             # (B, T) entropy per step
+    return (H * mask).sum() / mask.sum()
 
 
 # U -> Len of character sequence

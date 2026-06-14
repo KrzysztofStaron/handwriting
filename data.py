@@ -1,8 +1,10 @@
+import os
+import random
 from functools import partial
 
 import numpy as np
 import torch
-from torch.utils.data import Dataset, DataLoader
+from torch.utils.data import Dataset, DataLoader, Sampler
 
 
 def build_vocab(sentences):
@@ -33,7 +35,8 @@ class StrokeDataset(Dataset):
       target = points 0 .. T-1
     """
 
-    def __init__(self, strokes, sentences, stoi, std, max_len=None):
+    def __init__(self, strokes, sentences, stoi, std, max_len=None,
+                 collected_dir=None):
         self.std = std
         self.stoi = stoi
         self.seqs = []
@@ -55,6 +58,48 @@ class StrokeDataset(Dataset):
 
             self.seqs.append(torch.from_numpy(s))
             self.texts.append(torch.tensor(idx, dtype=torch.long))
+
+        if collected_dir:
+            self._append_collected(collected_dir, max_len)
+
+    def _append_collected(self, collected_dir, max_len):
+        """Convert collected/*.json canvas samples on the fly and append them.
+
+        Reuses import_collected.file_to_array -- the single source of truth for the
+        canvas->IAM normalisation (flip-y, robust rescale, arc-length resample, std
+        divide, reorder to (dx, dy, pen_up)). So dropping JSONs in collected/ is all
+        that's needed before training: no import_collected / export_dataset run.
+        """
+        from glob import glob
+        from pathlib import Path
+        from import_collected import file_to_array
+
+        files = sorted(glob(os.path.join(collected_dir, "*.json")))
+        if not files:
+            print(f"StrokeDataset: no canvas samples in {collected_dir}/")
+            return
+        added = skipped = 0
+        for f in files:
+            result = file_to_array(Path(f), self.std)        # already normalised
+            if result is None:                                # degenerate (empty / too small)
+                skipped += 1
+                continue
+            arr, text, _ = result
+            if any(ch not in self.stoi for ch in text):       # out-of-vocab guard
+                skipped += 1
+                continue
+            idx = [self.stoi[c] for c in text]
+            if max_len is not None and len(arr) > max_len:
+                n_chars = max(1, round(len(idx) * max_len / len(arr)))
+                arr = arr[:max_len]
+                idx = idx[:n_chars]
+            self.seqs.append(torch.from_numpy(np.asarray(arr, dtype=np.float32)))
+            self.texts.append(torch.tensor(idx, dtype=torch.long))
+            added += 1
+        msg = f"StrokeDataset: +{added} collected canvas samples (total {len(self.seqs)})"
+        if skipped:
+            msg += f", skipped {skipped} (degenerate/out-of-vocab)"
+        print(msg)
 
     def __len__(self):
         return len(self.seqs)
@@ -94,14 +139,83 @@ def collate(batch, vocab_size):
     return x, y, mask, c, c_mask
 
 
-def get_loader(batch_size=32, num_workers=4, pin_memory=True, max_len=700):
+class BucketBatchSampler(Sampler):
+    """Group similar-length sequences into batches to minimise padding waste.
+
+    collate() pads every sequence in a batch up to the batch's LONGEST member, so a
+    random batch is dominated by its longest outlier -- measured ~40% of the compute
+    on the IAM+collected set goes to padding. Here we split the sequences at the
+    MEDIAN length into a short bucket (<= median) and a long bucket (> median), and
+    draw each batch from a SINGLE bucket. The pad target then tracks the bucket, not a
+    global outlier, so short batches pad to ~median and long batches stay together.
+
+    Within each bucket we further SORT by length inside megabatches (sort_megabatch
+    batches' worth at a time) before cutting into batches, so each batch is nearly
+    length-homogeneous and pads to almost nothing. The shuffle-then-sort-in-chunks
+    order keeps membership varying epoch to epoch (a full global sort would fix it).
+
+    Sequences are never split or truncated -- only the grouping into batches changes.
+    """
+
+    def __init__(self, lengths, batch_size, shuffle=True, sort_megabatch=50):
+        self.lengths = list(lengths)
+        self.batch_size = batch_size
+        self.shuffle = shuffle
+        self.sort_megabatch = sort_megabatch
+        median = float(np.median(lengths))
+        short = [i for i, L in enumerate(lengths) if L <= median]
+        long_ = [i for i, L in enumerate(lengths) if L > median]
+        self.buckets = [b for b in (short, long_) if b]   # drop an empty bucket
+        self.median = median
+
+    def _make_batches(self):
+        batches = []
+        mega = self.batch_size * self.sort_megabatch
+        for bucket in self.buckets:
+            idx = list(bucket)
+            if self.shuffle:
+                random.shuffle(idx)
+            # sort by length within each megabatch so consecutive batches contain
+            # near-identical lengths (minimal padding), with the per-epoch shuffle
+            # above still reshuffling which sequences land in which megabatch.
+            for m in range(0, len(idx), mega):
+                chunk = sorted(idx[m:m + mega], key=lambda i: self.lengths[i])
+                batches += [chunk[k:k + self.batch_size]
+                            for k in range(0, len(chunk), self.batch_size)]
+        if self.shuffle:
+            random.shuffle(batches)        # mix short/long batches across the epoch
+        return batches
+
+    def __iter__(self):
+        return iter(self._make_batches())
+
+    def __len__(self):
+        return sum((len(b) + self.batch_size - 1) // self.batch_size
+                   for b in self.buckets)
+
+
+def get_loader(batch_size=32, num_workers=4, pin_memory=True, max_len=700,
+               collected_dir="collected", bucket=True):
+    # IAM (raw) + the hand-collected canvas samples, converted straight from
+    # collected/*.json. No pre-processing scripts: drop JSONs in, run train.py.
     strokes, sentences, std = load_data()
     stoi = build_vocab(sentences)
-    dataset = StrokeDataset(strokes, sentences, stoi, std, max_len=max_len)
-    loader = DataLoader(dataset, batch_size=batch_size, shuffle=True,
-                        collate_fn=partial(collate, vocab_size=len(stoi)),
-                        num_workers=num_workers, pin_memory=pin_memory,
-                        persistent_workers=num_workers > 0)
+    dataset = StrokeDataset(strokes, sentences, stoi, std, max_len=max_len,
+                            collected_dir=collected_dir)
+    collate_fn = partial(collate, vocab_size=len(stoi))
+    if bucket:
+        lengths = [len(s) for s in dataset.seqs]
+        sampler = BucketBatchSampler(lengths, batch_size, shuffle=True)
+        print(f"BucketBatchSampler: median len {sampler.median:.0f}, "
+              f"{len(sampler.buckets)} buckets, {len(sampler)} batches/epoch")
+        loader = DataLoader(dataset, batch_sampler=sampler, collate_fn=collate_fn,
+                            num_workers=num_workers, pin_memory=pin_memory,
+                            persistent_workers=num_workers > 0)
+    else:
+        loader = DataLoader(dataset, batch_size=batch_size, shuffle=True,
+                            collate_fn=collate_fn, num_workers=num_workers,
+                            pin_memory=pin_memory,
+                            persistent_workers=num_workers > 0)
     return loader, std, stoi
 
 

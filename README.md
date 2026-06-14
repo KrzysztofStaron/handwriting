@@ -54,7 +54,7 @@ curl -X POST https://handwriting-api-687921010800.europe-central2.run.app/genera
   -d '{"text": "hello world", "temperature": 0.5}'
 ```
 
-Returns NDJSON — one `{"point": [dx, dy, pen_up]}` per pen step, streamed live. Use this to animate the handwriting as it generates rather than waiting for the full result.
+Returns NDJSON — one `{"type": "point", "x": ..., "y": ..., "pen_up": 0|1}` per pen step, streamed live. Use this to animate the handwriting as it generates rather than waiting for the full result.
 
 ### JSON response
 

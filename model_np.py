@@ -1,8 +1,8 @@
 """Pure-numpy forward pass for the handwriting synthesis model.
 
-Mirrors model.py exactly (LSTMCell layer 1 + window feedback, then nn.LSTM layers
-2/3, MDN head) but with zero torch dependency -- so serving needs only numpy.
-Weights come from a state_dict-style dict of numpy arrays (export once with torch).
+Same architecture as model.py (LSTMCell layer 1 + window feedback, LSTM layers 2/3,
+MDN head) with zero torch dependency. Weights come from a state_dict-style dict of
+numpy arrays (export once with export_weights.py).
 """
 import numpy as np
 
@@ -44,10 +44,14 @@ class NumpyHandwritingModel:
         p = self.w["window_fc.weight"] @ h1 + self.w["window_fc.bias"]   # (3K,)
         alpha = np.exp(p[:K]); beta = np.exp(p[K:2*K])
         kappa = kappa_prev + np.exp(p[2*K:])
-        u = np.arange(c.shape[0])
+        U = c.shape[0]
+        u = np.arange(U)
         phi = (alpha[:, None] * np.exp(-beta[:, None] * (kappa[:, None] - u[None, :])**2)).sum(0)
         phi = phi * c_mask
-        return phi @ c, kappa, phi
+        # phi at the phantom position u=U (one past the last char), for the paper's
+        # stop criterion (sec. 5.3); mirrors model.compute_window.
+        phi_end = float((alpha * np.exp(-beta * (kappa - U)**2)).sum())
+        return phi @ c, kappa, phi, phi_end
 
     def forward(self, x, c, c_mask):
         """x: (T,3), c: (U,V), c_mask: (U,) -> out: (T,121), phis: (T,U)."""
@@ -56,7 +60,7 @@ class NumpyHandwritingModel:
         h1_seq, w_seq, phis = [], [], []
         for t in range(T):                                  # layer 1 + window (sequential)
             h1, c1 = self._cell(np.concatenate([x[t], w]), h1, c1, "lstm1", l0=False)
-            w, kappa, phi = self._window(h1, c, c_mask, kappa)
+            w, kappa, phi, _ = self._window(h1, c, c_mask, kappa)
             h1_seq.append(h1); w_seq.append(w); phis.append(phi)
         h1_seq = np.array(h1_seq); w_seq = np.array(w_seq)
 
@@ -76,13 +80,17 @@ class NumpyHandwritingModel:
         out = feat @ self.w["fc.weight"].T + self.w["fc.bias"]         # (T, 121)
         return out, np.array(phis)
 
-    def sample_iter(self, c, c_mask, temperature=1.0, max_steps=2000, tail_steps=25, rng=None):
+    def sample_iter(self, c, c_mask, temperature=1.0, max_steps=None,
+                    steps_per_char=50, tail_steps=12, min_steps=20, rng=None):
         """Autoregressive generation, one point at a time (mirrors generate.py).
 
         c: (U,V) one-hot text, c_mask: (U,). Yields (dx, dy, pen_up, phi) per step.
+        max_steps is a runaway guard; None scales it with the text length.
         """
         rng = rng if rng is not None else np.random.default_rng()
         H, V, U = self.H, c.shape[1], c.shape[0]
+        if max_steps is None:
+            max_steps = 400 + steps_per_char * U
         z = lambda: np.zeros(H, np.float32)
         h1, c1, h2, c2, h3, c3 = z(), z(), z(), z(), z(), z()
         w = np.zeros(V, np.float32)
@@ -92,7 +100,7 @@ class NumpyHandwritingModel:
 
         for t in range(max_steps):
             h1, c1 = self._cell(np.concatenate([x, w]), h1, c1, "lstm1", l0=False)
-            w, kappa, phi = self._window(h1, c, c_mask, kappa)
+            w, kappa, phi, phi_end = self._window(h1, c, c_mask, kappa)
             h2, c2 = self._cell(np.concatenate([x, h1, w]), h2, c2, "lstm2", l0=True)
             h3, c3 = self._cell(np.concatenate([x, h2, w]), h3, c3, "lstm3", l0=True)
             out = self.w["fc.weight"] @ np.concatenate([h1, h2, h3]) + self.w["fc.bias"]
@@ -110,7 +118,8 @@ class NumpyHandwritingModel:
             x = np.array([dx, dy, pen_up], np.float32)
             yield float(dx), float(dy), pen_up, phi
 
-            if reached_end_at is None and int(phi.argmax()) == U - 1:
+            # stop (paper sec. 5.3): window slid off the end of the text, then a grace
+            if reached_end_at is None and t >= min_steps and phi_end > phi.max():
                 reached_end_at = t
             if reached_end_at is not None and t - reached_end_at >= tail_steps:
                 break

@@ -132,7 +132,7 @@ def vocab():
 
 @app.get("/health")
 def health():
-    return jsonify({"status": "ok", "backend": "numpy", "model": "best-4"})
+    return jsonify({"status": "ok", "backend": "numpy", "model": "best"})
 
 
 if __name__ == "__main__":

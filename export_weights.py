@@ -9,7 +9,7 @@ import json
 import numpy as np
 import torch
 
-CKPT = "best-4.pth"
+CKPT = "best.pth"
 
 sd = torch.load(CKPT, map_location="cpu")
 np.savez("weights.npz", **{k: v.numpy().astype(np.float32) for k, v in sd.items()})

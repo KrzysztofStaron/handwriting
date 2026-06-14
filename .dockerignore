@@ -1,5 +1,5 @@
-# keep the build context (and image) tiny — only model.py/generate.py/app.py and
-# best-3.pth/stoi.pth/std.json are COPYed by the Dockerfile; everything else is noise.
+# keep the build context (and image) tiny — the Dockerfile COPYs app_np.py,
+# model_np.py, weights.npz, stoi.json, and std.json; everything else is noise.
 .venv/
 __pycache__/
 *.pyc
@@ -12,8 +12,6 @@ data/
 # training / dev-only + torch serving code (numpy image uses app_np.py + model_np.py)
 train.py
 data.py
-diag.py
-main.py
 model.py
 generate.py
 app.py

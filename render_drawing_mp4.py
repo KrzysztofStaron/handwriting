@@ -36,7 +36,7 @@ def variant_seed(line_i, temperature):
 
 
 # Review variants/grid.png, then set one temp per line (from TEMPS):
-PICKS = [0.5, 0.3, 0.0, 0.2, 0.2, 0.5]
+PICKS = [0.2, 0.3, 0.0, 0.2, 0.2, 0.2]
 
 
 def build_line_config(picks):
