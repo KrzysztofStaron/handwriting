@@ -1,3 +1,4 @@
+import json
 import os
 import random
 from functools import partial
@@ -5,6 +6,24 @@ from functools import partial
 import numpy as np
 import torch
 from torch.utils.data import Dataset, DataLoader, Sampler
+
+REJECTED_FILE = "data/rejected_review.json"
+
+
+def load_rejected(path=REJECTED_FILE):
+    """Ids manually flagged as removed in the review tool (data/rejected_review.json).
+
+    A flat list of strings: 'iam:<index>' for an IAM line (index into strokes.npy, the
+    order load_data uses) and '<dir>:<filename>' for a collected canvas sample. Same
+    scheme as rebuild_dataset.py.
+    """
+    if not os.path.exists(path):
+        return set()
+    raw = open(path).read().strip()
+    if not raw:
+        return set()
+    parsed = json.loads(raw)
+    return set(parsed) if isinstance(parsed, list) else set()
 
 
 def build_vocab(sentences):
@@ -36,13 +55,22 @@ class StrokeDataset(Dataset):
     """
 
     def __init__(self, strokes, sentences, stoi, std, max_len=None,
-                 collected_dir=None):
+                 collected_dir=None, rejected=None):
         self.std = std
         self.stoi = stoi
         self.seqs = []
         self.texts = []
+        # samples flagged as removed in the review tool -- skipped below (None = load
+        # data/rejected_review.json; pass an empty set to disable filtering).
+        self.rejected = load_rejected() if rejected is None else rejected
+        rejected_iam = {int(r.split(":", 1)[1])
+                        for r in self.rejected if r.startswith("iam:")}
 
-        for s, sent in zip(strokes, sentences):
+        dropped_iam = 0
+        for i, (s, sent) in enumerate(zip(strokes, sentences)):
+            if i in rejected_iam:                  # IAM line flagged as removed
+                dropped_iam += 1
+                continue
             s = s.astype(np.float32).copy()
             s[:, 1:] /= std                    # normalise offsets
             s = s[:, [1, 2, 0]]                # reorder to (dx, dy, pen_up)
@@ -59,27 +87,37 @@ class StrokeDataset(Dataset):
             self.seqs.append(torch.from_numpy(s))
             self.texts.append(torch.tensor(idx, dtype=torch.long))
 
+        if dropped_iam:
+            print(f"StrokeDataset: dropped {dropped_iam} rejected IAM lines "
+                  f"(kept {len(self.seqs)})")
+
         if collected_dir:
             self._append_collected(collected_dir, max_len)
 
     def _append_collected(self, collected_dir, max_len):
         """Convert collected/*.json canvas samples on the fly and append them.
 
-        Reuses import_collected.file_to_array -- the single source of truth for the
-        canvas->IAM normalisation (flip-y, robust rescale, arc-length resample, std
-        divide, reorder to (dx, dy, pen_up)). So dropping JSONs in collected/ is all
-        that's needed before training: no import_collected / export_dataset run.
+        collected_dir may be a single directory or a list of directories (all globbed
+        for *.json). Reuses import_collected.file_to_array -- the single source of truth
+        for the canvas->IAM normalisation (flip-y, robust rescale, arc-length resample,
+        std divide, reorder to (dx, dy, pen_up)). So dropping JSONs in a collected dir is
+        all that's needed before training: no import_collected / export_dataset run.
         """
         from glob import glob
         from pathlib import Path
         from import_collected import file_to_array
 
-        files = sorted(glob(os.path.join(collected_dir, "*.json")))
+        dirs = [collected_dir] if isinstance(collected_dir, str) else list(collected_dir)
+        # keep the source dir with each file so we can build its review id "<dir>:<name>"
+        files = [(d, p) for d in dirs for p in sorted(glob(os.path.join(d, "*.json")))]
         if not files:
-            print(f"StrokeDataset: no canvas samples in {collected_dir}/")
+            print(f"StrokeDataset: no canvas samples in {dirs}")
             return
-        added = skipped = 0
-        for f in files:
+        added = skipped = rejected = 0
+        for d, f in files:
+            if f"{d}:{Path(f).name}" in self.rejected:        # flagged as removed
+                rejected += 1
+                continue
             result = file_to_array(Path(f), self.std)        # already normalised
             if result is None:                                # degenerate (empty / too small)
                 skipped += 1
@@ -97,6 +135,8 @@ class StrokeDataset(Dataset):
             self.texts.append(torch.tensor(idx, dtype=torch.long))
             added += 1
         msg = f"StrokeDataset: +{added} collected canvas samples (total {len(self.seqs)})"
+        if rejected:
+            msg += f", dropped {rejected} rejected"
         if skipped:
             msg += f", skipped {skipped} (degenerate/out-of-vocab)"
         print(msg)
@@ -195,11 +235,15 @@ class BucketBatchSampler(Sampler):
 
 
 def get_loader(batch_size=32, num_workers=4, pin_memory=True, max_len=700,
-               collected_dir="collected", bucket=True):
+               collected_dir="collected", bucket=True, include_iam=True):
     # IAM (raw) + the hand-collected canvas samples, converted straight from
     # collected/*.json. No pre-processing scripts: drop JSONs in, run train.py.
+    # include_iam=False -> train on collected only, but STILL derive std + vocab from
+    # IAM so normalisation and the char->id mapping match best.pth (train_test.py).
     strokes, sentences, std = load_data()
     stoi = build_vocab(sentences)
+    if not include_iam:
+        strokes, sentences = [], []
     dataset = StrokeDataset(strokes, sentences, stoi, std, max_len=max_len,
                             collected_dir=collected_dir)
     collate_fn = partial(collate, vocab_size=len(stoi))

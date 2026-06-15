@@ -45,12 +45,25 @@ TARGET_HEIGHT = 17.4   # ROBUST line height (p5-p95 of y), raw units. We deliber
                        # matches IAM's step-size distribution. Full extent then floats
                        # per sample, exactly as IAM does (IAM only divides by global std).
 HEIGHT_PLO, HEIGHT_PHI = 5, 95
-TARGET_STEP = 1.4      # MEAN pen-down step length, raw units. The mean (not the
-                       # median, 0.96) is what reproduces IAM's points-per-character:
-                       # resampled count = arc_length / step, IAM count = arc_length / mean.
+TARGET_PPC = 21.4      # TARGET points-per-character (IAM median). Each sample is
+                       # resampled at a PER-SAMPLE arc-length step chosen so its pts/char
+                       # lands here, regardless of how big or wiggly the drawing is. This
+                       # is the key invariant for the synthesis window: the soft-window
+                       # advances kappa a ~constant number of chars per stroke-step, so
+                       # the char<->stroke RATE must be consistent across samples. A fixed
+                       # step (the old TARGET_STEP) let pts/char float 15-37 across the
+                       # collected set, feeding the window contradictory advance rates and
+                       # garbling generation. Matching pts/char fixes that; the trade is
+                       # that offset SIZE becomes the free variable (the model is far more
+                       # tolerant of letter-size spread than of alignment-rate spread).
+TARGET_STEP = 1.4      # legacy fixed step, still printed by main() as a reference scale.
 IAM_PTS_PER_CHAR = 21.4  # reference only, printed as a sanity check
 
 MIN_HEIGHT_PX = 5.0    # reject drawings flatter than this (probably a scribble/dot)
+MIN_CHARS = 2          # drop empty / single-char texts: U=1 is degenerate for the window
+MIN_ARC_PER_CHAR = 8.0 # drop near-zero-travel junk (real writing ~30 raw units/char; the
+                       # 'test'/'browser test' scribbles sit ~2.4 -- no letter signal, and
+                       # adaptive resampling would just upsample them into smooth nonsense).
 
 
 def load_std() -> float:
@@ -106,6 +119,9 @@ def file_to_array(path: Path, std: float) -> tuple[np.ndarray, str, float] | Non
     if len(pts) < 2 or not text:
         return None
 
+    if len(text) < MIN_CHARS:                 # single-char / empty: degenerate for window
+        return None
+
     strokes = split_strokes(pts)
 
     # 1. flip y (canvas grows down, IAM grows up)
@@ -122,8 +138,15 @@ def file_to_array(path: Path, std: float) -> tuple[np.ndarray, str, float] | Non
     scale = TARGET_HEIGHT / height
     strokes = [s * scale for s in strokes]
 
-    # 3. resample at uniform arc length
-    strokes = [resample_stroke(s, TARGET_STEP) for s in strokes]
+    # 3. resample at a PER-SAMPLE arc-length step so pts/char == TARGET_PPC. The step is
+    #    total_arc / (TARGET_PPC * n_chars): every sample then advances the window at the
+    #    same char/step rate as IAM, no matter its size or stroke complexity.
+    arc = sum(np.linalg.norm(np.diff(s, axis=0), axis=1).sum()
+              for s in strokes if len(s) >= 2)
+    if arc / len(text) < MIN_ARC_PER_CHAR:    # near-zero pen travel -> junk scribble
+        return None
+    step = arc / (TARGET_PPC * len(text))
+    strokes = [resample_stroke(s, step) for s in strokes]
 
     # 4. flatten to (dx, dy, pen_up) offsets, normalised
     coords = np.concatenate(strokes)

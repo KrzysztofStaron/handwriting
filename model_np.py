@@ -4,6 +4,7 @@ Same architecture as model.py (LSTMCell layer 1 + window feedback, LSTM layers 2
 MDN head) with zero torch dependency. Weights come from a state_dict-style dict of
 numpy arrays (export once with export_weights.py).
 """
+import math
 import numpy as np
 
 M = 20  # output mixture components
@@ -106,10 +107,19 @@ class NumpyHandwritingModel:
             out = self.w["fc.weight"] @ np.concatenate([h1, h2, h3]) + self.w["fc.bias"]
 
             rest = out[1:].reshape(M, 6)
-            pi = _softmax(rest[:, 0]); pi /= pi.sum()        # guard exact-sum for rng.choice
-            j = int(rng.choice(M, p=pi))
-            sx = max(np.exp(rest[j, 3]), 1e-2) * temperature
-            sy = max(np.exp(rest[j, 4]), 1e-2) * temperature
+            # paper's probability bias b (sec. 5.4): temperature = exp(-b). A single b
+            # biases BOTH the component choice (eq.62: softmax over pi_hat*(1+b)) and
+            # each blob's variance (eq.61: sigma*exp(-b)). Mirrors generate.py.
+            if temperature <= 0:                             # b -> inf: pure mode
+                j = int(np.argmax(rest[:, 0]))
+                sigma_scale = 0.0
+            else:
+                b = -math.log(temperature)
+                pi = _softmax(rest[:, 0] * (1.0 + b)); pi /= pi.sum()   # eq.62
+                j = int(rng.choice(M, p=pi))
+                sigma_scale = temperature                     # exp(-b), eq.61
+            sx = max(np.exp(rest[j, 3]), 1e-2) * sigma_scale
+            sy = max(np.exp(rest[j, 4]), 1e-2) * sigma_scale
             r = np.tanh(rest[j, 5])
             u1, u2 = rng.standard_normal(2)
             dx = rest[j, 1] + sx * u1

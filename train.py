@@ -8,18 +8,18 @@ INIT_CKPT = "best.pth"       # warm-start checkpoint; None = train from scratch
 FREEZE_BACKBONE = False      # True = train only model.fc (output head)
 ENTROPY_WEIGHT = 0           # window-sharpness regulariser strength (tune by win_H)
 
-LEARNING_RATE = 1e-5    # TINY -- single-epoch fine-tune, just nudge the weights
-LR_MIN = 1e-5           # == LR so the 1-epoch cosine is effectively a flat rate
-BATCH_SIZE = 5
-EPOCHS = 1             # one fine-tuning pass
-GRAD_CLIP = 10
+LEARNING_RATE = 1e-4
+LR_MIN = 1e-5           # cosine decay target over the run
+BATCH_SIZE = 32
+EPOCHS = 20
 
 # FULL RUN: train on whole lines (no truncation) for final quality.
 # Set to e.g. 700 for fast iteration. None = use every point of every line.
 MAX_LEN = None
 
-# IAM + the hand-collected canvas samples, read straight from collected/*.json.
-COLLECTED_DIR = "collected"
+# IAM + the hand-collected canvas samples, read straight from <dir>/*.json.
+# Pass a list to pull from several collection folders.
+COLLECTED_DIR = []
 
 EVAL_EVERY = 2          # every N epochs, dump a sample + alignment plot to samples/
 EVAL_TEXT = "extraordinary"   # a long word -- where the smear shows
@@ -99,7 +99,6 @@ def main():
 
             optimizer.zero_grad(set_to_none=True)
             loss.backward()
-            torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=GRAD_CLIP)
             optimizer.step()
 
             epoch_loss += loss.item()

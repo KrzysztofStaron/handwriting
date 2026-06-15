@@ -65,10 +65,29 @@ def sample_iter(model, text, stoi, device, temperature=1.0, max_steps=None,
 
             pi, mu_x, mu_y, sig_x, sig_y, rho, pen = split_params(out)
 
-            j = torch.multinomial(pi[0, 0], 1).item()          # pick a Gaussian
+            # --- paper's probability bias b (sec. 5.4, eq. 61-62) ---
+            # The public knob is `temperature` = exp(-b): temp=1 -> b=0 (unbiased,
+            # eq.62/61 reduce to identity), temp->0 -> b->inf (network emits the mode).
+            # A SINGLE b biases two things together, and we must apply BOTH:
+            #   eq.62  the CHOICE of component:  pi <- softmax(pi_hat*(1+b)) = pi^(1+b)/Z
+            #   eq.61  the VARIANCE within it:   sigma <- sigma*exp(-b)
+            # The old code only did eq.61 (sigma*temperature) and sampled the component
+            # from the UNbiased pi -- so low temp shrank blobs but never sharpened the
+            # letter choice. That half-measure is the bug being fixed here.
+            p = pi[0, 0]
+            if temperature <= 0:                                   # b -> inf: pure mode
+                j = int(torch.argmax(p).item())
+                sigma_scale = 0.0
+            else:
+                b = -math.log(temperature)
+                # softmax(log(pi)*(1+b)) == pi^(1+b)/Z; log(pi) differs from pi_hat only
+                # by a per-step constant, which softmax cancels -- so this is exactly eq.62.
+                p = torch.softmax(torch.log(p + 1e-12) * (1.0 + b), dim=-1)
+                j = torch.multinomial(p, 1).item()                 # pick a Gaussian (eq.62)
+                sigma_scale = temperature                          # exp(-b), eq.61
             mx, my = mu_x[0, 0, j].item(), mu_y[0, 0, j].item()
-            sx = sig_x[0, 0, j].item() * temperature
-            sy = sig_y[0, 0, j].item() * temperature
+            sx = sig_x[0, 0, j].item() * sigma_scale
+            sy = sig_y[0, 0, j].item() * sigma_scale
             r = rho[0, 0, j].item()
 
             u1, u2 = torch.randn(1).item(), torch.randn(1).item()  # sample the blob
