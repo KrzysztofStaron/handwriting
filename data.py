@@ -239,7 +239,7 @@ def get_loader(batch_size=32, num_workers=4, pin_memory=True, max_len=700,
     # IAM (raw) + the hand-collected canvas samples, converted straight from
     # collected/*.json. No pre-processing scripts: drop JSONs in, run train.py.
     # include_iam=False -> train on collected only, but STILL derive std + vocab from
-    # IAM so normalisation and the char->id mapping match best.pth (train_test.py).
+    # IAM so normalisation and the char->id mapping stay compatible with best.pth.
     strokes, sentences, std = load_data()
     stoi = build_vocab(sentences)
     if not include_iam:
