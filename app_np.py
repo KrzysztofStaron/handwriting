@@ -9,6 +9,7 @@ Local: python app_np.py
 import json
 import re
 import threading
+from pathlib import Path
 
 import numpy as np
 from flask import Flask, Response, jsonify, request
@@ -25,8 +26,8 @@ _TRANSLIT = str.maketrans({
 })
 
 # --- load artifacts once at startup (all torch-free) ---
-stoi = json.load(open("stoi.json"))
-std = json.load(open("std.json"))["std"]
+stoi = json.loads(Path("stoi.json").read_text(encoding="utf-8"))
+std = json.loads(Path("std.json").read_text(encoding="utf-8"))["std"]
 model = NumpyHandwritingModel.from_npz("weights.npz")
 VOCAB = set(stoi)
 _DISALLOWED = re.compile(f"[^{re.escape(''.join(sorted(VOCAB)))}]")
