@@ -82,8 +82,8 @@ HAIRLINE = (230, 224, 214)
 
 
 def load_model():
-    stoi = json.load(open("stoi.json"))
-    std = json.load(open("std.json"))["std"]
+    stoi = json.loads(Path("stoi.json").read_text())
+    std = json.loads(Path("std.json").read_text())["std"]
     model = NumpyHandwritingModel.from_npz("weights.npz")
     return model, stoi, std
 
@@ -129,13 +129,39 @@ def onehot(text, stoi):
     return c, np.ones(u, np.float32)
 
 
+def collect_strokes(model, c, c_mask, std, temperature, rng=None):
+    """Run the model and return (completed_strokes, xs, ys).
+
+    A shared helper so generate_variants.py and render_drawing_mp4.py
+    don't duplicate the pen-step accumulation loop.
+    """
+    cx = cy = 0.0
+    xs, ys = [0.0], [0.0]
+    completed = []
+    current = []
+
+    for dx, dy, pen_up, _phi in model.sample_iter(c, c_mask, temperature=temperature, rng=rng):
+        cx += dx * std
+        cy += dy * std
+        xs.append(cx)
+        ys.append(cy)
+        current.append((cx, cy))
+        if pen_up:
+            if len(current) >= 2:
+                completed.append(current[:])
+            current = []
+
+    if len(current) >= 2:
+        completed.append(current[:])
+    return completed, xs, ys
+
+
 def _warm_gradient():
-    arr = np.zeros((HEIGHT, WIDTH, 3), dtype=np.uint8)
+    t = np.linspace(0, 1, HEIGHT, dtype=np.float32)[:, None]
     top = np.array(CANVAS_TOP, dtype=np.float32)
     bot = np.array(CANVAS_BOT, dtype=np.float32)
-    for y in range(HEIGHT):
-        t = y / HEIGHT
-        arr[y] = (top * (1 - t) + bot * t).astype(np.uint8)
+    col = (top * (1 - t) + bot * t).astype(np.uint8)[:, None, :]   # (HEIGHT, 1, 3)
+    arr = np.broadcast_to(col, (HEIGHT, WIDTH, 3))                 # fill full width
     return Image.fromarray(arr, "RGB")
 
 
@@ -195,17 +221,21 @@ def draw_demo_ui(draw, text, index, total, drawing=False, temperature=0.3):
               fill=CLAY if drawing else MUTED)
 
 
-def fit_transform(xs, ys):
-    px0, py0, px1, py1 = DRAW_PANEL
-    area_w = px1 - px0 - 2 * PANEL_PAD
-    area_h = py1 - py0 - 2 * PANEL_PAD
+def fit_transform(xs, ys, panel=None, pad=None, margin=0.88):
+    if panel is None:
+        panel = DRAW_PANEL
+    if pad is None:
+        pad = PANEL_PAD
+    px0, py0, px1, py1 = panel
+    area_w = px1 - px0 - 2 * pad
+    area_h = py1 - py0 - 2 * pad
     min_x, max_x = min(xs), max(xs)
     min_y, max_y = min(ys), max(ys)
     span_x = max(max_x - min_x, 1.0)
     span_y = max(max_y - min_y, 1.0)
-    scale = min(area_w / span_x, area_h / span_y) * 0.88
-    ox = px0 + PANEL_PAD + (area_w - span_x * scale) / 2
-    oy = py0 + PANEL_PAD + (area_h - span_y * scale) / 2
+    scale = min(area_w / span_x, area_h / span_y) * margin
+    ox = px0 + pad + (area_w - span_x * scale) / 2
+    oy = py0 + pad + (area_h - span_y * scale) / 2
     tx = lambda x: ox + (x - min_x) * scale
     ty = lambda y: oy + (max_y - y) * scale
     return tx, ty
@@ -243,15 +273,21 @@ def render_frame(scenery, text, index, total, completed=None, current=None,
 
 
 def emit(proc, frame_rgb, stats):
-    proc.stdin.write(frame_rgb.tobytes())
+    try:
+        proc.stdin.write(frame_rgb.tobytes())
+    except (BrokenPipeError, OSError) as e:
+        raise RuntimeError(f"ffmpeg subprocess died: {e}") from e
     stats["frames"] += 1
 
 
 def hold(proc, frame_rgb, seconds, stats):
     n = max(1, int(seconds * FPS))
     buf = frame_rgb.tobytes()
-    for _ in range(n):
-        proc.stdin.write(buf)
+    try:
+        for _ in range(n):
+            proc.stdin.write(buf)
+    except (BrokenPipeError, OSError) as e:
+        raise RuntimeError(f"ffmpeg subprocess died: {e}") from e
     stats["frames"] += n
 
 
@@ -311,12 +347,17 @@ def main():
     stats = {"frames": 0}
     last_frame = None
 
-    for i, text in enumerate(LINES):
-        cfg = line_config[i]
-        print(f"streaming line {i + 1}/{len(LINES)}: {text!r}  t={cfg['temperature']}  seed={cfg['seed']}")
-        last_frame = stream_line(model, stoi, std, text, i, len(LINES), scenery, proc, stats, cfg)
+    try:
+        for i, text in enumerate(LINES):
+            cfg = line_config[i]
+            print(f"streaming line {i + 1}/{len(LINES)}: {text!r}  t={cfg['temperature']}  seed={cfg['seed']}")
+            last_frame = stream_line(model, stoi, std, text, i, len(LINES), scenery, proc, stats, cfg)
 
-    hold(proc, last_frame, HOLD_END, stats)
+        hold(proc, last_frame, HOLD_END, stats)
+    except (BrokenPipeError, OSError, RuntimeError) as e:
+        proc.stdin.close()
+        proc.wait()
+        raise SystemExit(f"ffmpeg failed: {e}") from e
 
     proc.stdin.close()
     if proc.wait() != 0:

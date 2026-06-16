@@ -99,7 +99,9 @@ def resample_stroke(stroke: np.ndarray, step: float) -> np.ndarray:
     arc = np.concatenate([[0.0], np.cumsum(seg)])
     total = arc[-1]
     if total < step:
-        return stroke[[0, -1]]
+        # Stroke is too short to resample — keep as-is to avoid duplicating
+        # single-point marks (e.g. i-dots) into degenerate 2-point segments.
+        return stroke
     n = int(total // step) + 1
     targets = np.linspace(0.0, total, n + 1)
     x = np.interp(targets, arc, stroke[:, 0])
@@ -114,10 +116,10 @@ def file_to_array(path: Path, std: float) -> tuple[np.ndarray, str, float] | Non
     Returns None if the file is malformed or degenerate.
     """
     data = json.loads(path.read_text())
-    text: str = data["text"]
-    pts = data["points"]
+    text: str | None = data.get("text")
+    pts: list | None = data.get("points")
 
-    if len(pts) < 2 or not text:
+    if not text or not pts or len(pts) < 2:
         return None
 
     if len(text) < MIN_CHARS:                 # single-char / empty: degenerate for window
@@ -181,13 +183,15 @@ def main():
     # Load existing if present
     existing_strokes: list[np.ndarray] = []
     existing_texts: list[str] = []
+    existing_filenames: list[str] = []  # preserve order — set(filenames) is used for dedup
     already_imported: set[str] = set()
 
     if OUT_FILE.exists():
         data = np.load(OUT_FILE, allow_pickle=True)
         existing_strokes = list(data["strokes"])
         existing_texts = list(data["texts"])
-        already_imported = set(data["filenames"])
+        existing_filenames = list(data["filenames"])
+        already_imported = set(existing_filenames)
         print(f"Existing: {len(existing_strokes)} samples in {OUT_FILE}")
 
     new_strokes: list[np.ndarray] = []
@@ -223,7 +227,7 @@ def main():
 
     all_strokes = existing_strokes + new_strokes
     all_texts = existing_texts + new_texts
-    all_filenames = list(already_imported) + new_filenames
+    all_filenames = existing_filenames + new_filenames
 
     np.savez(
         OUT_FILE,
