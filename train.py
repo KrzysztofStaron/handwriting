@@ -4,7 +4,7 @@ from model import HandwritingModel, sequence_loss, window_entropy
 from data import get_loader
 from generate import sample, save_plot, save_alignment
 
-INIT_CKPT = "best.pth"       # warm-start checkpoint; None = train from scratch
+INIT_CKPT = "models/pre-trained.pth"  # warm-start checkpoint; None = train from scratch
 FREEZE_BACKBONE = False      # True = train only model.fc (output head)
 ENTROPY_WEIGHT = 0           # window-sharpness regulariser strength (tune by win_H)
 
@@ -45,6 +45,7 @@ def diag_report(model, batch):
 def main():
     print(f"device: {DEVICE}   max_len: {MAX_LEN}   init: {INIT_CKPT or 'scratch'}")
     torch.backends.cudnn.benchmark = True
+    os.makedirs("models", exist_ok=True)
     os.makedirs("samples", exist_ok=True)
 
     loader, std, stoi = get_loader(batch_size=BATCH_SIZE, max_len=MAX_LEN,
@@ -117,8 +118,8 @@ def main():
 
         if avg < best_loss:
             best_loss = avg
-            torch.save(model.state_dict(), "best.pth")
-            print(f"  saved best.pth (avg_loss {avg:.4f})", flush=True)
+            torch.save(model.state_dict(), "models/post-trained.pth")
+            print(f"  saved models/post-trained.pth (avg_loss {avg:.4f})", flush=True)
 
         # periodically SEE quality AND keep the weights, so the final model can be
         # chosen by EYE (alignment + sample) rather than by lowest loss alone -- loss

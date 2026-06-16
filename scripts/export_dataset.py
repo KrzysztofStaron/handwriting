@@ -5,13 +5,16 @@ hand-collected canvas samples (collected_strokes.npz) into a single dataset that
 is ALREADY normalised by std and ALREADY in (dx, dy, pen_up) order -- so training
 can load it straight from one place with no per-source preprocessing.
 
-    uv run export_dataset.py            # -> data/dataset.npz
+    uv run python scripts/export_dataset.py            # -> data/dataset.npz
 
 Layout of the .npz:
     strokes : object array of (T, 3) float32 arrays, (dx, dy, pen_up), std-normalised
     texts   : object array of str, the line each stroke sequence spells
     std     : the offset std used to normalise (needed to denormalise at draw time)
 """
+import sys
+from pathlib import Path
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 import os
 import numpy as np

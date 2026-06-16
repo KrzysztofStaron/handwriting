@@ -1,6 +1,8 @@
+import json
 import math
 import torch
 import numpy as np
+from pathlib import Path
 from model import HandwritingModel, split_params
 
 # NOTE: matplotlib and data.get_loader are imported lazily (inside the functions
@@ -8,9 +10,13 @@ from model import HandwritingModel, split_params
 # training/debug plotters and the __main__ block use them.
 
 
-def load_model(device, ckpt="best-4.pth", stoi_path="stoi.pth"):
+def load_model(device, ckpt="models/post-trained.pth", stoi_path="stoi.pth"):
     """Load a trained synthesis model and its vocab."""
-    stoi = torch.load(stoi_path)
+    p = Path(stoi_path)
+    if p.exists():
+        stoi = torch.load(stoi_path)
+    else:
+        stoi = json.load(open(p.with_suffix(".json")))
     model = HandwritingModel(vocab_size=len(stoi)).to(device)
     model.load_state_dict(torch.load(ckpt, map_location=device))
     model.eval()

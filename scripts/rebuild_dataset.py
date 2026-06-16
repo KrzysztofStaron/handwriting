@@ -23,10 +23,13 @@ Output matches export_dataset.py's layout exactly:
     std     : the offset std used to normalise
 """
 
+import sys
+from pathlib import Path
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+
 import json
 import shutil
 from glob import glob
-from pathlib import Path
 
 import numpy as np
 

@@ -18,7 +18,7 @@ on **Google Cloud Run** as a CPU-only, scale-to-zero container.
 | **Region** | `europe-central2` (Warsaw) |
 | **Image** | `europe-central2-docker.pkg.dev/handwriting-inference/apps/handwriting-api` |
 | **Artifact Registry repo** | `apps` (docker format, `europe-central2`) |
-| **Served model** | `best-4.pth` (epoch 77, avg_loss −2.0367), exported to `weights.npz` |
+| **Served model** | `models/post-trained.pth`, exported to `weights.npz` |
 | **Backend / image size** | numpy (`app_np.py`), ~98 MB |
 
 ### Runtime config (and why)
@@ -108,11 +108,11 @@ After deploy, `gcloud run deploy` prints the service URL. Verify: `curl URL/heal
 
 ## Redeploy after a model or code change
 
-To ship a **different checkpoint**: set `CKPT` in `export_weights.py`, regenerate the serving
+To ship a **different checkpoint**: update `models/post-trained.pth`, regenerate the serving
 artifacts (needs torch, run offline), then rebuild/push/deploy:
 
 ```bash
-uv run export_weights.py        # best-X.pth -> weights.npz + stoi.json (+ std.json if missing)
+uv run export_weights.py        # models/post-trained.pth -> weights.npz + stoi.json (+ std.json if missing)
 # then the same build -> push -> deploy steps above
 ```
 

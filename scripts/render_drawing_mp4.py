@@ -4,9 +4,12 @@ Animated video: each pen step from sample_iter becomes one video frame (live
 ink, not static PNGs). Use generate_variants.py only to pick temp/seed; this
 script re-runs the model and streams the chosen sample into drawing.mp4.
 """
+import sys
+from pathlib import Path
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+
 import json
 import subprocess
-from pathlib import Path
 
 import numpy as np
 from PIL import Image, ImageDraw, ImageFont

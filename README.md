@@ -80,7 +80,7 @@ Polish characters (ą, ę, ó, …) are automatically transliterated to ASCII. A
 |---|---|
 | Model | 3× LSTM, H=400, soft window K=10, MDN M=20 |
 | Training | IAM On-Line Handwriting DB, 80 epochs, batch 80 |
-| Checkpoint | `best-4.pth` — epoch 77, avg loss −2.037 |
+| Checkpoint | `models/pre-trained.pth` (IAM-only), `models/post-trained.pth` (fine-tuned) |
 | Serving | Pure numpy (no torch in production) |
 | Deployment | Google Cloud Run, `europe-central2`, scale-to-zero |
 | Image size | ~98 MB (vs ~334 MB with CPU torch) |
@@ -102,6 +102,9 @@ uv run generate.py
 # run the numpy API server
 uv run app_np.py
 # → http://127.0.0.1:5000
+
+# generate a comparison grid
+uv run python scripts/grid_samples.py
 ```
 
 Weights live on Hugging Face ([PanzerBread/handwriting](https://huggingface.co/PanzerBread/handwriting)), not in this repo. Fetch them before running:
@@ -111,11 +114,16 @@ uv pip install "huggingface_hub[cli]"
 hf download PanzerBread/handwriting weights.npz stoi.json std.json --local-dir .
 ```
 
-### Training from scratch
+### Training
 
 ```bash
 # needs the IAM On-Line Handwriting Dataset in data/
 uv run train.py
+# saves checkpoints to models/post-trained.pth
+
+# export for serving
+uv run export_weights.py
+# models/post-trained.pth → weights.npz + stoi.json
 ```
 
 ---
@@ -123,15 +131,29 @@ uv run train.py
 ## Repo layout
 
 ```
-model.py          # PyTorch model (training)
-model_np.py       # numpy forward pass (serving)
-app_np.py         # Flask API (deployed)
-train.py          # training loop
-generate.py       # sample from a checkpoint
-export_weights.py # .pth → weights.npz for serving
-data.py           # dataset + dataloader
-Dockerfile        # slim numpy image, no torch
-docs/             # sample images
+model.py              # PyTorch model (training)
+model_np.py           # numpy forward pass (serving)
+app_np.py             # Flask API (deployed)
+train.py              # training loop
+generate.py           # sample from a checkpoint
+export_weights.py     # .pth → weights.npz for serving
+data.py               # dataset + dataloader
+Dockerfile            # slim numpy image, no torch
+
+models/               # checkpoints (gitignored, on Hugging Face)
+  pre-trained.pth     #   IAM-only baseline
+  post-trained.pth    #   fine-tuned on IAM + collected
+
+scripts/              # dev / demo tools
+  grid_samples.py     #   sample grid across texts + temps
+  generate_variants.py#   variant PNGs for video picking
+  render_drawing_mp4.py#  animated MP4 from streamed inference
+  import_collected.py #   canvas JSON → numpy
+  export_dataset.py   #   merge sources → data/dataset.npz
+  rebuild_dataset.py  #   rebuild with QA rejections
+  iam_helper.py       #   review-tool helper
+
+docs/                 # images, deployment notes, dev logs
 ```
 
 ---

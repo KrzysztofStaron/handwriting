@@ -9,13 +9,17 @@ import json
 import numpy as np
 import torch
 
-CKPT = "best.pth"
+CKPT = "models/post-trained.pth"
 
 sd = torch.load(CKPT, map_location="cpu")
 np.savez("weights.npz", **{k: v.numpy().astype(np.float32) for k, v in sd.items()})
 
-stoi = torch.load("stoi.pth")
-json.dump(stoi, open("stoi.json", "w"), ensure_ascii=False)
+from pathlib import Path
+if Path("stoi.pth").exists():
+    stoi = torch.load("stoi.pth")
+    json.dump(stoi, open("stoi.json", "w"), ensure_ascii=False)
+else:
+    stoi = json.load(open("stoi.json"))
 
 try:
     json.load(open("std.json"))

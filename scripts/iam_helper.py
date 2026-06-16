@@ -14,7 +14,7 @@ import json
 import numpy as np
 from pathlib import Path
 
-ROOT = Path(__file__).parent
+ROOT = Path(__file__).resolve().parent.parent
 NPZ = ROOT / 'data' / 'dataset.npz'
 REJECTED_FILE = ROOT / 'data' / 'rejected_review.json'
 

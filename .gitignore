@@ -16,14 +16,23 @@ wheels/
 # keep the comparison images in the repo
 !docs/*.png
 
-DEPLOY.md
-vocab.txt
-
-# demo artifacts — local only
+# local-only artifacts
+models/
+samples/
+samples_test/
+samples_overfit/
+variants/
+stoi.pth
+collected_strokes.npz
+alignment.png
+samples_grid.png
 drawing.mp4
 *.mp3
-variants/
+vocab.txt
+
+# apps / tools not in the repo
 collector/
 .claude
 collected/
 collected2/
+collected_edge/

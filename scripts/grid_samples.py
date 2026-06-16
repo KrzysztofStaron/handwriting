@@ -1,4 +1,8 @@
 """Generate a grid of handwriting samples across varying difficulty. Throwaway."""
+import sys
+from pathlib import Path
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+
 import torch
 import numpy as np
 import matplotlib.pyplot as plt
@@ -20,7 +24,7 @@ TEMP = 0.4
 
 def main():
     torch.manual_seed(0)
-    model, stoi = load_model("cpu", ckpt="best.pth")
+    model, stoi = load_model("cpu", ckpt="models/post-trained.pth")
     std = 1.9816  # IAM offset std (same constant training used)
 
     n = len(TEXTS)
@@ -37,7 +41,7 @@ def main():
         ax.set_aspect("equal"); ax.axis("off")
         ax.set_title(f'"{text}"   ({len(seq)} steps)', fontsize=10, loc="left")
 
-    fig.suptitle(f"best.pth handwriting samples  (temperature {TEMP})", fontsize=13)
+    fig.suptitle(f"handwriting samples  (temperature {TEMP})", fontsize=13)
     plt.tight_layout(rect=[0, 0, 1, 0.99])
     plt.savefig("samples_grid.png", bbox_inches="tight", dpi=130)
     print("saved samples_grid.png")

@@ -3,8 +3,11 @@
 Produces 16 PNGs + grid for picking temp/seed. The final video is rendered
 separately by render_drawing_mp4.py with live stroke-by-stroke animation.
 """
-import json
+import sys
 from pathlib import Path
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+
+import json
 
 import numpy as np
 from PIL import Image, ImageDraw
