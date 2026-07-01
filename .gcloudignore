@@ -1,0 +1,40 @@
+# Cloud Build upload — keep the Docker build context small but include serving artifacts.
+.venv/
+__pycache__/
+*.py[oc]
+.git/
+.gitignore
+
+data/
+models/
+samples/
+collected/
+collected2/
+collected_edge/
+collector/
+.claude/
+
+*.pth
+*.png
+*.pdf
+*.md
+*.mp3
+drawing.mp4
+uv.lock
+pyproject.toml
+vocab.txt
+stoi.pth
+
+# training / dev-only (not in the numpy image)
+train.py
+data.py
+model.py
+generate.py
+app.py
+export_weights.py
+scripts/
+
+# serving artifacts required by the Dockerfile
+!weights.npz
+!stoi.json
+!std.json
