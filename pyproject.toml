@@ -10,3 +10,9 @@ dependencies = [
     "numpy>=2.4.6",
     "torch>=2.12.0",
 ]
+
+[project.optional-dependencies]
+inference = [
+    "huggingface-hub>=0.34.0",
+    "pillow>=11.0.0",
+]

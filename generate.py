@@ -1,3 +1,4 @@
+import argparse
 import json
 import math
 import torch
@@ -5,9 +6,16 @@ import numpy as np
 from pathlib import Path
 from model import HandwritingModel, split_params
 
+STD_PATH = Path("std.json")
+
 # NOTE: matplotlib and data.get_loader are imported lazily (inside the functions
 # that need them) so the serving image can skip those deps entirely. Only the
 # training/debug plotters and the __main__ block use them.
+
+
+def load_std(path=STD_PATH):
+    """Load the offset normalisation constant used at training and serving time."""
+    return json.loads(Path(path).read_text(encoding="utf-8"))["std"]
 
 
 def load_model(device, ckpt="models/post-trained.pth", stoi_path="stoi.pth"):
@@ -16,11 +24,19 @@ def load_model(device, ckpt="models/post-trained.pth", stoi_path="stoi.pth"):
     if p.exists():
         stoi = torch.load(stoi_path)
     else:
-        stoi = json.load(open(p.with_suffix(".json")))
+        stoi = json.loads(p.with_suffix(".json").read_text(encoding="utf-8"))
     model = HandwritingModel(vocab_size=len(stoi)).to(device)
     model.load_state_dict(torch.load(ckpt, map_location=device))
     model.eval()
     return model, stoi
+
+
+def default_device():
+    if torch.cuda.is_available():
+        return "cuda"
+    if torch.backends.mps.is_available():
+        return "mps"
+    return "cpu"
 
 
 def sample_iter(model, text, stoi, device, temperature=1.0, max_steps=None,
@@ -165,14 +181,32 @@ def save_alignment(phis, text, path):
 
 
 if __name__ == "__main__":
-    from data import get_loader
-    device = "cuda" if torch.cuda.is_available() else (
-        "mps" if torch.backends.mps.is_available() else "cpu")
-    model, stoi = load_model(device)
-    _, std, _ = get_loader()   # normalisation factor used during training
+    parser = argparse.ArgumentParser(description="Generate handwriting PNGs from a checkpoint.")
+    parser.add_argument("text", nargs="?", default="Hello world", help="Text to synthesize")
+    parser.add_argument(
+        "-t", "--temperature", type=float, default=None,
+        help="Sampling temperature (default: sweep 0.0, 0.3, 0.5, 0.8)",
+    )
+    parser.add_argument("-o", "--output", help="Output PNG path (single temperature only)")
+    parser.add_argument("--alignment", help="Save window-alignment plot to this path")
+    parser.add_argument("--ckpt", default="models/post-trained.pth", help="Model checkpoint")
+    parser.add_argument("--device", default=default_device(), help="Torch device")
+    args = parser.parse_args()
 
-    text = "Hello world"
-    for temp in [0.0, 0.3, 0.5, 0.8]:
-        seq, phis = sample(model, text, stoi, device, temperature=temp)
-        save_plot(seq, std, f"sample_temp_{temp}.png", f"'{text}'  temperature={temp}")
-    save_alignment(phis, text, "alignment.png")
+    model, stoi = load_model(args.device, ckpt=args.ckpt)
+    std = load_std()
+
+    if args.temperature is not None:
+        seq, phis = sample(model, args.text, stoi, args.device, temperature=args.temperature)
+        out = args.output or f"sample_temp_{args.temperature}.png"
+        save_plot(seq, std, out, f"'{args.text}'  temperature={args.temperature}")
+        if args.alignment:
+            save_alignment(phis, args.text, args.alignment)
+    else:
+        last_phis = None
+        for temp in [0.0, 0.3, 0.5, 0.8]:
+            seq, phis = sample(model, args.text, stoi, args.device, temperature=temp)
+            save_plot(seq, std, f"sample_temp_{temp}.png", f"'{args.text}'  temperature={temp}")
+            last_phis = phis
+        if last_phis is not None:
+            save_alignment(last_phis, args.text, args.alignment or "alignment.png")
