@@ -1,4 +1,4 @@
-"""Post-train the handwriting policy with a TrOCR-Large reward.
+"""Post-train the handwriting policy with a TrOCR-Large visual reward.
 
 Each update grows one line a word at a time. The first word is drawn `--beam`
 times from a blank page. A random divisor f of that width decides the rest:
@@ -74,7 +74,7 @@ _CKPT_NAME = re.compile(r"^ckpt-(\d+)\.pth$")
 
 def parse_args(argv=None):
     parser = argparse.ArgumentParser(
-        description="REINFORCE the handwriting model against a TrOCR-Large CER reward. "
+        description="REINFORCE the handwriting model against a TrOCR-Large vCER reward. "
                     "A checkpoint and a 10-sample review sheet are written about every "
                     "10 minutes. Re-running resumes from the latest checkpoint. "
                     f"The base model is {BASE_CKPT} and is not modified.",
@@ -100,9 +100,9 @@ def parse_args(argv=None):
     parser.add_argument("--dict", default="/usr/share/dict/words",
                         help="Word list for --words. One word per line. "
                              "Capitals, digits, and punctuation are dropped.")
-    parser.add_argument("--reward", choices=("cer", "vcer", "exp", "linear", "soft"), default="cer",
-                        help="cer: 0.8*(1-min(CER,1))+0.2*exact (default). "
-                             "vcer: the same shape with a visual edit distance. "
+    parser.add_argument("--reward", choices=("vcer", "cer", "exp", "linear", "soft"), default="vcer",
+                        help="vcer: visual distance, 0.8*(1-min(wCER,1))+0.2*exact (default). "
+                             "cer: the same shape with plain CER. "
                              "exp: exp(-CER). linear: 1-CER. "
                              "soft: 1 at or below --tau, then linear to 0 at CER=1.")
     parser.add_argument("--vcer-alpha", type=float, default=0.8,
