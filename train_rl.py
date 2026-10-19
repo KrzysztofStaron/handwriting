@@ -366,7 +366,7 @@ def beam_stages(model, ref, scorer, optimizer, prompts, stoi, std, device, args,
     # A pinned --text stays as given. Otherwise some lines are ten short
     # random words, so the policy also practices strings the play never contains.
     chance = 0.0 if getattr(args, "text", None) else getattr(args, "novel", 0.0)
-    text = choose_label(prompts, stoi, chance, getattr(args, "max_chars", 48))
+    text, source = choose_label(prompts, stoi, chance, getattr(args, "max_chars", 48))
     prefixes = word_prefixes(text)
     branch = args.beam // args.keep
     print(f"    {text!r}  {len(prefixes)} words  beam {args.beam}  keep {args.keep}",
@@ -486,7 +486,7 @@ def beam_stages(model, ref, scorer, optimizer, prompts, stoi, std, device, args,
         all_wcors.extend(wcors)
     yield (
         summarize_line(word_stats), all_rewards, all_cers, all_hyps, all_refs,
-        ema, all_draws, all_wcors, sheet_name,
+        ema, all_draws, all_wcors, sheet_name, source,
     )
 
 
@@ -732,7 +732,7 @@ def main():
                 while True:
                     counter = [updates]
                     stop_block = False
-                    for stats, rewards, cers, hyps, refs, ema, draws, wcors, sheet_name in beam_stages(
+                    for stats, rewards, cers, hyps, refs, ema, draws, wcors, sheet_name, source in beam_stages(
                         model, ref, scorer, optimizer, prompts, stoi, std, device, args, ema,
                         log=log, block=index, out_dir=out_dir, counter=counter,
                     ):
@@ -788,6 +788,7 @@ def main():
                             "steps_mean": (
                                 sum(item["steps"] for item in draws) / len(draws) if draws else None
                             ),
+                            "source": source,
                             "example": {"text": full_text, "hyp": hyps[best_i]},
                             "sheet": sheet_name,
                             "draws": draws,

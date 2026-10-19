@@ -778,10 +778,13 @@ def novel_line(stoi, words=10, min_len=1, max_len=4, max_chars=48):
 
 
 def choose_label(prompts, stoi, novel, max_chars=48):
-    """A line from the pool, or with probability `novel` ten short random words."""
+    """A line from the pool, or with probability `novel` ten short random words.
+
+    Returns `(text, source)` where source is `novel` or `play`.
+    """
     if novel > 0 and random.random() < novel:
-        return novel_line(stoi, max_chars=max_chars)
-    return pick_prompts(prompts, 1)[0]
+        return novel_line(stoi, max_chars=max_chars), "novel"
+    return pick_prompts(prompts, 1)[0], "play"
 
 
 def _split_strokes(xy, pen):

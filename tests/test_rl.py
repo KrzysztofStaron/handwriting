@@ -601,12 +601,13 @@ class BeamTests(unittest.TestCase):
             prompts = ["the old man"]
             self.assertEqual(
                 [choose_label(prompts, stoi, 0.0) for _ in range(8)],
-                ["the old man"] * 8,
+                [("the old man", "play")] * 8,
             )
             fresh = [choose_label(prompts, stoi, 1.0) for _ in range(8)]
-            self.assertTrue(all(len(line.split()) == 10 for line in fresh))
-            self.assertTrue(all(len(word) <= 4 for line in fresh for word in line.split()))
-            self.assertTrue(all(set(line) <= set("abcABC012 ") for line in fresh))
+            self.assertTrue(all(kind == "novel" for _line, kind in fresh))
+            self.assertTrue(all(len(line.split()) == 10 for line, _kind in fresh))
+            self.assertTrue(all(len(word) <= 4 for line, _kind in fresh for word in line.split()))
+            self.assertTrue(all(set(line) <= set("abcABC012 ") for line, _kind in fresh))
         finally:
             random.setstate(state)
 

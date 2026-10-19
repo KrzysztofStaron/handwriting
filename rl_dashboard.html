@@ -80,8 +80,25 @@
   .pill.live { background: #e5f4eb; color: var(--live); }
   .pill.idle { background: #f8efd8; color: var(--idle); }
   .error { color: #8d1d1d; min-height: 1.2em; margin: 6px 0 0; }
+  .views {
+    display: flex;
+    gap: 6px;
+    align-items: center;
+    margin: 14px 0 0;
+  }
+  .views span {
+    margin-right: 4px;
+    font-size: 13px;
+    font-weight: 650;
+    color: var(--muted);
+  }
+  .views button.on {
+    background: var(--green);
+    color: #fff;
+    border-color: var(--green);
+  }
   .charts {
-    margin-top: 14px;
+    margin-top: 10px;
     display: grid;
     grid-template-columns: 1fr 1fr;
     gap: 10px;
@@ -188,6 +205,12 @@
 <main>
   <p id="error" class="error"></p>
   <p id="note" class="note" hidden></p>
+  <div class="views" role="group" aria-label="Which lines Reward and CER show">
+    <span>Reward and CER</span>
+    <button type="button" data-view="novel">Novel</button>
+    <button type="button" data-view="play">R&amp;J</button>
+    <button type="button" data-view="both" class="on">Both</button>
+  </div>
   <section class="charts">
     <figure>
       <figcaption>Reward <span id="eta-reward" class="until"></span><span id="badge-reward" class="badge"></span></figcaption>
@@ -264,6 +287,7 @@ const state = {
   expanded: null,
   gen: null,
   words: null,
+  view: "both",
   token: "",
 };
 
@@ -572,20 +596,59 @@ function placeChartLabels(spec, fit, points) {
   paintClocks();
 }
 
+function scrambledWord(word) {
+  // A digit, or a capital past the first letter plus a lowercase letter.
+  // All-caps English stays with the play.
+  if (/[0-9]/.test(word)) return true;
+  return /[a-z]/.test(word) && /[A-Z]/.test(word.slice(1));
+}
+
+function isNovelText(text) {
+  const words = String(text || "").trim().split(/\s+/).filter(Boolean);
+  if (!words.length || words.some((word) => !/^[A-Za-z0-9]+$/.test(word))) return false;
+  if (words.length === 10 && words.every((word) => word.length <= 4)) return true;
+  return words.every(scrambledWord);
+}
+
+function rowText(row) {
+  if (row.example && row.example.text) return row.example.text;
+  let best = "";
+  for (const draw of row.draws || []) {
+    const label = draw.text || "";
+    if (label.length >= best.length) best = label;
+  }
+  return best;
+}
+
+function rowKind(row) {
+  if (row.source === "novel" || row.source === "play") return row.source;
+  return isNovelText(rowText(row)) ? "novel" : "play";
+}
+
+function viewRows(rows) {
+  if (state.view === "both") return rows;
+  return rows.filter((row) => {
+    if (row.type === "update") return rowKind(row) === state.view;
+    if (row.type === "review") return state.view === "play";
+    return true;
+  });
+}
+
 function drawCharts(rows) {
+  const scored = viewRows(rows);
   drawChart(document.getElementById("chart-reward"), {
-    series: [{ color: "#1f4b3a", points: points(rows, "reward_mean") }],
-    band: band(rows, "reward_min", "reward_max"),
-    dots: dots(rows, "reward_mean"),
+    series: [{ color: "#1f4b3a", points: points(scored, "reward_mean") }],
+    band: band(scored, "reward_min", "reward_max"),
+    dots: dots(scored, "reward_mean"),
     yMax: 1,
     perfect: 1,
     eta: "eta-reward",
     badge: "badge-reward",
   });
   drawChart(document.getElementById("chart-cer"), {
-    series: [{ color: "#1f4b3a", points: points(rows, "cer_mean") }],
-    band: band(rows, "cer_min", "cer_max"),
-    dots: dots(rows, "cer_mean"),
+    series: [{ color: "#1f4b3a", points: points(scored, "cer_mean") }],
+    band: band(scored, "cer_min", "cer_max"),
+    dots: dots(scored, "cer_mean"),
     yMin: 0,
     perfect: 0,
     eta: "eta-cer",
@@ -994,6 +1057,17 @@ function stepSample(delta) {
 
 document.getElementById("gen-older").addEventListener("click", () => stepSample(-1));
 document.getElementById("gen-newer").addEventListener("click", () => stepSample(1));
+document.querySelectorAll(".views button").forEach((button) => {
+  button.addEventListener("click", () => {
+    state.view = button.dataset.view;
+    document.querySelectorAll(".views button").forEach((item) => {
+      item.classList.toggle("on", item === button);
+    });
+    const { rows } = currentRows();
+    drawCharts(rows);
+  });
+});
+
 document.getElementById("prefix-range").addEventListener("input", (event) => {
   state.words = Number(event.target.value);
   render();
