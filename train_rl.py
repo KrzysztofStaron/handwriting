@@ -1,7 +1,7 @@
 """Post-train the handwriting policy with a TrOCR-Large reward.
 
-Each update grows one line a word at a time. Nine drawings of the first word
-start from a blank page. The best three are kept, and each is continued three
+Each update grows one line a word at a time. Sixteen drawings of the first word
+start from a blank page. The best four are kept, and each is continued four
 ways. TrOCR scores the ink of everything written so far against those words
 plus the word just added. The gradient is applied only to the new strokes.
 The 10 samples at a checkpoint are only a review sheet of the full sentence.
@@ -79,9 +79,9 @@ def parse_args(argv=None):
                         help="Unused by the word beam. Each update expands one prompt.")
     parser.add_argument("-k", type=int, default=8,
                         help="Unused by the word beam. Width and survivors are --beam and --keep.")
-    parser.add_argument("--beam", type=int, default=9,
+    parser.add_argument("--beam", type=int, default=16,
                         help="Drawings of the current prefix. The first word starts from a blank page.")
-    parser.add_argument("--keep", type=int, default=3,
+    parser.add_argument("--keep", type=int, default=4,
                         help="Best prefixes carried forward. Each is continued beam/keep times.")
     parser.add_argument("--novel", type=float, default=0.25,
                         help="Chance a training line is ten random words of at most 4 "
