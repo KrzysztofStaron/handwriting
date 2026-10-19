@@ -747,6 +747,42 @@ def pick_prompts(prompts, n):
     return [random.choice(prompts) for _ in range(n)]
 
 
+def novel_line(stoi, words=3, min_len=4, max_len=12, max_chars=48):
+    """Three fresh words of letters and digits from the model alphabet.
+
+    A line like 'aeGyAcs OIxwy sskN1ewuyS'. Every character is in `stoi`,
+    so the policy can be asked to write it. Spaces only separate the words.
+    """
+    chars = [ch for ch in stoi if ch.isalnum()]
+    if not chars:
+        raise ValueError("vocab has no letters or digits")
+    if words < 1:
+        raise ValueError("a novel line needs at least one word")
+    gaps = words - 1
+    room = max_chars - gaps
+    if room < words:
+        raise ValueError("max_chars is too small for this many words")
+    share = max(1, room // words)
+    low = min(min_len, share)
+    high = min(max_len, room - low * (words - 1))
+    high = max(high, low)
+    lengths = [random.randint(low, high) for _ in range(words)]
+    while sum(lengths) + gaps > max_chars:
+        index = max(range(words), key=lambda i: lengths[i])
+        if lengths[index] <= low:
+            break
+        lengths[index] -= 1
+    parts = ["".join(random.choice(chars) for _ in range(n)) for n in lengths]
+    return " ".join(parts)
+
+
+def choose_label(prompts, stoi, novel, max_chars=48):
+    """A line from the pool, or with probability `novel` a fresh 3-word string."""
+    if novel > 0 and random.random() < novel:
+        return novel_line(stoi, max_chars=max_chars)
+    return pick_prompts(prompts, 1)[0]
+
+
 def _split_strokes(xy, pen):
     """Same cut as generate.save_plot: the pen-up point belongs to the stroke that ends."""
     strokes = []

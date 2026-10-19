@@ -144,7 +144,7 @@ Both stages keep `models/best-4.pth` as a frozen KL anchor and never write that 
 
 A crooked line then loses a little more. Two parallel lines sit on the top and the bottom of the ink and share one slope. A flat pair, slope 0 and no arch, loses nothing. `--straightness` (default 0.05) is the most that penalty can subtract.
 
-Prompts default to `data/romeo_juliet.txt`, the whole play cut into lines of at most 48 characters and sampled at random. `--prompts data/sentences.txt` is the IAM pool. `--max-chars` defaults to 48 so TrOCR's square resize does not squash the line.
+Prompts default to `data/romeo_juliet.txt`, the whole play cut into lines of at most 48 characters and sampled at random. `--prompts data/sentences.txt` is the IAM pool. `--max-chars` defaults to 48 so TrOCR's square resize does not squash the line. On `--novel` of draws (default 0.25) the line is three random words of letters and digits from the model alphabet, such as `aeGyAcs OIxwy sskN1ewuyS`, so the policy also practices strings the play does not contain. `--novel 0` keeps the file. `--text` stays on that one sentence.
 
 One prompt is grown a word at a time. The first word is drawn `--beam` times (default 9) from a blank page. The best `--keep` (default 3) continue, and each is extended `beam / keep` ways. TrOCR scores the ink of the whole prefix against the words written so far, including the word just added. The gradient covers only the new strokes, compared with the other continuations of the same prefix. Each word is its own logged update. `-k` and `--batch` do not change this.
 

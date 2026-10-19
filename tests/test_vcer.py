@@ -243,6 +243,7 @@ class PromptAndTrainerTests(unittest.TestCase):
         self.assertEqual(args.k, 8)
         self.assertEqual(args.beam, 9)
         self.assertEqual(args.keep, 3)
+        self.assertAlmostEqual(args.novel, 0.25)
         self.assertEqual(args.temp_min, 0.1)
         self.assertEqual(args.temp_max, 0.9)
 

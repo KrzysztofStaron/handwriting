@@ -27,9 +27,11 @@ from rl import (
     choice_sheet,
     consistency_sheet,
     group_advantages,
+    choose_label,
     history_state,
     load_policy_and_ref,
     logprobs_from_states,
+    novel_line,
     refuse_overwrite_base,
     reinforce_step,
     reward_from_cer,
@@ -551,6 +553,49 @@ class BeamTests(unittest.TestCase):
 
     def test_select_top_breaks_ties_toward_the_earlier_index(self):
         self.assertEqual(select_top([0.2, 0.9, 0.9, 0.1], 2), [1, 2])
+
+    def test_novel_line_is_three_words_from_the_alphabet(self):
+        state = random.getstate()
+        random.seed(0)
+        try:
+            stoi = {ch: i for i, ch in enumerate("abC12 !")}
+            letters = set("abC12")
+            seen = set()
+            for _ in range(40):
+                line = novel_line(stoi)
+                words = line.split(" ")
+                self.assertEqual(len(words), 3)
+                self.assertEqual(line, " ".join(words))
+                self.assertLessEqual(len(line), 48)
+                for word in words:
+                    self.assertGreaterEqual(len(word), 4)
+                    self.assertLessEqual(len(word), 12)
+                    self.assertTrue(set(word) <= letters)
+                seen.update(line)
+            self.assertTrue(seen & set("ab"))
+            self.assertIn("C", seen)
+            self.assertTrue(seen & set("12"))
+            tight = novel_line(stoi, max_chars=14)
+            self.assertEqual(len(tight.split(" ")), 3)
+            self.assertLessEqual(len(tight), 14)
+        finally:
+            random.setstate(state)
+
+    def test_choose_label_mixes_the_play_with_a_fresh_line(self):
+        state = random.getstate()
+        random.seed(1)
+        try:
+            stoi = {ch: i for i, ch in enumerate("abcABC012")}
+            prompts = ["the old man"]
+            self.assertEqual(
+                [choose_label(prompts, stoi, 0.0) for _ in range(8)],
+                ["the old man"] * 8,
+            )
+            fresh = [choose_label(prompts, stoi, 1.0) for _ in range(8)]
+            self.assertTrue(all(len(line.split()) == 3 for line in fresh))
+            self.assertTrue(all(set(line) <= set("abcABC012 ") for line in fresh))
+        finally:
+            random.setstate(state)
 
     def test_split_logprob_matches_one_replay_of_the_same_text(self):
         torch.manual_seed(0)

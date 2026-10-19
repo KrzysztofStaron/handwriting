@@ -5,6 +5,8 @@ start from a blank page. The best three are kept, and each is continued three
 ways. TrOCR scores the ink of everything written so far against those words
 plus the word just added. The gradient is applied only to the new strokes.
 The 10 samples at a checkpoint are only a review sheet of the full sentence.
+Some training lines are three random words from the model alphabet, so the
+policy also writes strings the play does not contain.
 
 About every 10 minutes the loop writes a checkpoint and draws one fixed short
 sentence 10 times, so the sheets are comparable. Re-running with no arguments
@@ -37,11 +39,11 @@ from rl import (
     TrocrScorer,
     add_policy_args,
     advantages,
+    choose_label,
     consistency_sheet,
     draw_temperatures,
     line_straightness,
     load_policy_and_ref,
-    pick_prompts,
     select_top,
     refuse_overwrite_base,
     reinforce_step,
@@ -79,6 +81,10 @@ def parse_args(argv=None):
                         help="Drawings of the current prefix. The first word starts from a blank page.")
     parser.add_argument("--keep", type=int, default=3,
                         help="Best prefixes carried forward. Each is continued beam/keep times.")
+    parser.add_argument("--novel", type=float, default=0.25,
+                        help="Chance a training line is three random words of letters "
+                             "and digits from the model alphabet, instead of a line "
+                             "from --prompts. 0 keeps the file.")
     parser.add_argument("--reward", choices=("cer", "vcer", "exp", "linear", "soft"), default="cer",
                         help="cer: 0.8*(1-min(CER,1))+0.2*exact (default). "
                              "vcer: the same shape with a visual edit distance. "
@@ -314,7 +320,10 @@ def beam_stages(model, ref, scorer, optimizer, prompts, stoi, std, device, args,
     """
     from generate import sample_batch
 
-    text = pick_prompts(prompts, 1)[0]
+    # A pinned --text stays as given. Otherwise some lines are three random
+    # words, so the policy also practices strings the play never contains.
+    chance = 0.0 if getattr(args, "text", None) else getattr(args, "novel", 0.0)
+    text = choose_label(prompts, stoi, chance, getattr(args, "max_chars", 48))
     prefixes = word_prefixes(text)
     branch = args.beam // args.keep
     print(f"    {text!r}  {len(prefixes)} words  beam {args.beam}  keep {args.keep}",
@@ -504,6 +513,8 @@ def main():
         raise SystemExit("--k and --batch must be >= 1")
     if args.beam < 2 or args.keep < 1 or args.beam % args.keep != 0:
         raise SystemExit("--beam must be at least 2 and a multiple of --keep")
+    if not 0.0 <= args.novel <= 1.0:
+        raise SystemExit("--novel must be between 0 and 1")
     if args.review_k < 1:
         raise SystemExit("--review-k must be >= 1")
     if args.block_minutes <= 0:
@@ -552,8 +563,8 @@ def main():
         print("sampler on cpu (one pen step at a time is faster there); TrOCR on mps",
               flush=True)
     print(f"KL anchor: {args.ref}", flush=True)
-    print(f"updates: {args.batch} sentences x {args.k} draws, sampled in one batch   "
-          f"then a checkpoint about every {args.block_minutes:g} min", flush=True)
+    print(f"word beam {args.beam}, keep {args.keep}   "
+          f"checkpoint about every {args.block_minutes:g} min", flush=True)
     print(f"temperature: normal around {(args.temp_min + args.temp_max) / 2:g}, "
           f"kept inside {args.temp_min:g} to {args.temp_max:g}",
           flush=True)
@@ -573,7 +584,11 @@ def main():
         review_text = resolve_review_text(args.review_text, run_path, stoi)
         prompts = resolve_prompts(args.text, args.prompts, stoi, args.min_chars, args.max_chars)
         std = load_std()
-        print(f"prompts: {len(prompts)}   review sentence: {review_text!r} x {args.review_k}",
+        novel_bit = ""
+        if not args.text and args.novel > 0:
+            novel_bit = f"   novel 3-word line on {args.novel:.0%} of draws"
+        print(f"prompts: {len(prompts)}{novel_bit}   "
+              f"review sentence: {review_text!r} x {args.review_k}",
               flush=True)
 
         scorer = TrocrScorer(
@@ -631,6 +646,7 @@ def main():
             "k": args.k,
             "beam": args.beam,
             "keep": args.keep,
+            "novel": 0.0 if args.text else args.novel,
             "temperature_min": args.temp_min,
             "temperature_max": args.temp_max,
             "temperature_distribution": "normal",
