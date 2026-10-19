@@ -181,6 +181,7 @@
   table { width: 100%; border-collapse: collapse; font-variant-numeric: tabular-nums; }
   th, td { text-align: left; padding: 5px 6px; border-bottom: 1px solid var(--line); vertical-align: top; }
   th { font-size: 12px; color: var(--muted); font-weight: 600; }
+  th.num, td.num { white-space: nowrap; }
   tr.click { cursor: pointer; }
   tr.detail td { background: #fbf8f3; font-size: 13px; }
   .hyp { color: var(--muted); }
@@ -260,7 +261,11 @@
       <div>
         <table>
           <thead>
-            <tr><th>Temp</th><th>CER</th><th>Reward</th><th>Read</th></tr>
+            <tr>
+              <th class="num">Temp</th><th class="num">CER</th><th class="num">vCER</th>
+              <th class="num">Reward</th><th class="num">Tilt</th><th class="num">Spacing</th>
+              <th>Read</th>
+            </tr>
           </thead>
           <tbody id="review-body"></tbody>
         </table>
@@ -783,19 +788,26 @@ function sampleTables(draws, placeholders) {
     const rows = group.draws.map((draw) => {
       const picture = samplePicture(draw, placeholders);
       const under = picture
-        ? `<tr class="sample-pic"><td colspan="4">${picture}</td></tr>`
+        ? `<tr class="sample-pic"><td colspan="7">${picture}</td></tr>`
         : "";
       return `
       <tr>
-        <td>${num(draw.reward, 3)}</td>
-        <td>${num(draw.temperature, 2)}</td>
-        <td>${num(draw.cer, 3)}</td>
+        <td class="num">${num(draw.reward, 3)}</td>
+        <td class="num">${num(draw.temperature, 2)}</td>
+        <td class="num">${num(draw.cer, 3)}</td>
+        <td class="num">${num(draw.straightness, 3)}</td>
+        <td class="num">${num(draw.wcer, 3)}</td>
+        <td class="num">${num(draw.spacing, 3)}</td>
         <td>${esc(draw.hyp || draw.skipped || "")}</td>
       </tr>${under}`;
     }).join("");
     return `${samplePrompt(group.label)}
       <table>
-        <thead><tr><th>Reward</th><th>Temp</th><th>CER</th><th>Read</th></tr></thead>
+        <thead><tr>
+          <th class="num">Reward</th><th class="num">Temp</th><th class="num">CER</th>
+          <th class="num">Tilt</th><th class="num">vCER</th><th class="num">Spacing</th>
+          <th>Read</th>
+        </tr></thead>
         <tbody>${rows}</tbody>
       </table>`;
   }).join("");
@@ -1000,11 +1012,14 @@ function render() {
   const draws = review && review.draws ? review.draws : [];
   body.innerHTML = draws.map((draw) => `
     <tr>
-      <td>${num(draw.temperature, 2)}</td>
-      <td>${num(draw.cer, 2)}</td>
-      <td>${num(draw.reward, 3)}</td>
+      <td class="num">${num(draw.temperature, 2)}</td>
+      <td class="num">${num(draw.cer, 3)}</td>
+      <td class="num">${num(draw.wcer, 3)}</td>
+      <td class="num">${num(draw.reward, 3)}</td>
+      <td class="num">${num(draw.straightness, 3)}</td>
+      <td class="num">${num(draw.spacing, 3)}</td>
       <td>${esc(draw.hyp || "")}</td>
-    </tr>`).join("") || `<tr><td colspan="4" class="quiet">No review draws.</td></tr>`;
+    </tr>`).join("") || `<tr><td colspan="7" class="quiet">No review draws.</td></tr>`;
 
   const shown = updates.slice(-40);
   document.getElementById("update-body").innerHTML = shown.map((row) => {
