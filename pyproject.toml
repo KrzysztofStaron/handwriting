@@ -16,3 +16,8 @@ inference = [
     "huggingface-hub>=0.34.0",
     "pillow>=11.0.0",
 ]
+rl = [
+    "pillow>=11.0.0",
+    "sentencepiece>=0.2.0",
+    "transformers>=4.46.0,<5",
+]
