@@ -260,7 +260,7 @@ function paintStatus(rows) {
 
 function points(rows, yKey) {
   return rows.filter((row) => row.type === "update" && row[yKey] != null)
-    .map((row) => ({ x: row.update, y: row[yKey] }));
+    .map((row) => ({ x: row.update, y: row[yKey], t: row.ts }));
 }
 
 function band(rows, lowKey, highKey) {
@@ -311,6 +311,35 @@ function trendText(slope) {
   return (per > 0 ? "+" : "") + per.toFixed(digits) + " / 100 updates";
 }
 
+function formatDuration(seconds) {
+  if (seconds < 90 * 60) return Math.max(1, Math.round(seconds / 60)) + "m";
+  const hours = seconds / 3600;
+  if (hours < 48) {
+    const shown = hours < 10 ? Math.round(hours * 10) / 10 : Math.round(hours);
+    return String(shown).replace(/\.0$/, "") + "h";
+  }
+  return Math.round(seconds / 86400) + "d";
+}
+
+function etaText(points, fit, target) {
+  if (!fit || !points.length) return "";
+  let first = null;
+  let last = null;
+  for (const point of points) {
+    if (point.t == null) continue;
+    if (!first || point.x < first.x) first = point;
+    if (!last || point.x > last.x) last = point;
+  }
+  if (!first || !last || last.x === first.x || last.t <= first.t) return "";
+  const yNow = fit.intercept + fit.slope * fit.xb;
+  const gap = target - yNow;
+  if (Math.abs(gap) < 1e-4) return "at perfection";
+  if (gap * fit.slope <= 0) return "moving away";
+  const seconds = (gap / fit.slope) * (last.t - first.t) / (last.x - first.x);
+  if (!Number.isFinite(seconds) || seconds < 0) return "";
+  return formatDuration(seconds) + " until perfection";
+}
+
 function drawChart(canvas, spec) {
   const width = canvas.clientWidth;
   const height = canvas.clientHeight;
@@ -354,7 +383,12 @@ function drawChart(canvas, spec) {
   const span = y1 - y0 || Math.abs(y1) || 1;
   y0 -= span * 0.08;
   y1 += span * 0.08;
-  if (y0 === y1) y1 = y0 + 1;
+  if (spec.yMin != null) y0 = Math.max(y0, spec.yMin);
+  if (spec.yMax != null) y1 = Math.min(y1, spec.yMax);
+  if (!(y1 > y0)) {
+    y0 = spec.yMin != null ? spec.yMin : y0;
+    y1 = spec.yMax != null ? spec.yMax : y0 + 1;
+  }
   const digits = axisDigits(y1 - y0);
   const plotW = width - pad.l - pad.r;
   const plotH = height - pad.t - pad.b;
@@ -425,10 +459,14 @@ function drawChart(canvas, spec) {
   }
   ctx.restore();
   if (fit) {
-    const text = trendText(fit.slope);
+    const labels = [trendText(fit.slope)];
+    const eta = spec.perfect == null ? "" : etaText(spec.series[0].points, fit, spec.perfect);
+    if (eta) labels.push(eta);
     ctx.font = "11px ui-sans-serif, system-ui, sans-serif";
     ctx.fillStyle = "#2456a3";
-    ctx.fillText(text, width - pad.r - ctx.measureText(text).width, pad.t + 11);
+    labels.forEach((text, index) => {
+      ctx.fillText(text, width - pad.r - ctx.measureText(text).width, pad.t + 11 + index * 13);
+    });
   }
 }
 
@@ -437,11 +475,15 @@ function drawCharts(rows) {
     series: [{ color: "#1f4b3a", points: points(rows, "reward_mean") }],
     band: band(rows, "reward_min", "reward_max"),
     dots: dots(rows, "reward_mean"),
+    yMax: 1,
+    perfect: 1,
   });
   drawChart(document.getElementById("chart-cer"), {
     series: [{ color: "#1f4b3a", points: points(rows, "cer_mean") }],
     band: band(rows, "cer_min", "cer_max"),
     dots: dots(rows, "cer_mean"),
+    yMin: 0,
+    perfect: 0,
   });
   drawChart(document.getElementById("chart-kl"), {
     series: [{ color: "#1f4b3a", points: points(rows, "kl") }],
