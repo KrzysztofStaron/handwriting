@@ -35,6 +35,7 @@
   }
   h1 { font-size: 22px; font-weight: 650; margin: 0; letter-spacing: -0.02em; }
   h2 { font-size: 15px; margin: 0 0 8px; }
+  .sample-prompt { margin: 16px 0 6px; font-weight: 650; color: var(--ink); }
   .sub, .note, figcaption, .quiet { color: var(--muted); }
   .sub { margin: 4px 0 0; min-height: 1.2em; }
   .note {
@@ -63,21 +64,8 @@
   .pill.live { background: #e5f4eb; color: var(--live); }
   .pill.idle { background: #f8efd8; color: var(--idle); }
   .error { color: #8d1d1d; min-height: 1.2em; margin: 6px 0 0; }
-  .cards {
-    display: grid;
-    grid-template-columns: repeat(4, 1fr);
-    gap: 10px;
-    margin: 14px 0;
-  }
-  .card {
-    background: var(--card);
-    border: 1px solid var(--line);
-    border-radius: 10px;
-    padding: 10px 12px;
-  }
-  .card span { display: block; color: var(--muted); font-size: 12px; }
-  .card strong { font-size: 20px; font-variant-numeric: tabular-nums; }
   .charts {
+    margin-top: 14px;
     display: grid;
     grid-template-columns: 1fr 1fr;
     gap: 10px;
@@ -89,7 +77,7 @@
     border-radius: 10px;
     padding: 8px 10px 10px;
   }
-  figcaption { font-size: 13px; margin-bottom: 4px; }
+  figcaption { font-size: 13px; font-weight: 650; color: var(--ink); margin-bottom: 4px; }
   canvas { width: 100%; height: 180px; display: block; }
   section.panel {
     margin-top: 14px;
@@ -99,7 +87,8 @@
     padding: 12px;
   }
   .split { display: grid; grid-template-columns: 1.3fr 1fr; gap: 14px; align-items: start; }
-  .checks { display: flex; flex-wrap: wrap; gap: 6px; margin-bottom: 8px; }
+  .nav { display: flex; gap: 8px; align-items: center; margin-bottom: 10px; }
+  .nav select { flex: 1; min-width: 0; }
   button {
     font: inherit;
     border: 1px solid var(--line);
@@ -109,18 +98,27 @@
     cursor: pointer;
     color: var(--ink);
   }
-  button.on { background: var(--green); color: white; border-color: var(--green); }
+  button:disabled { opacity: 0.35; cursor: default; }
   img.sheet { width: 100%; height: auto; background: white; border: 1px solid var(--line); border-radius: 8px; }
+  img.sample {
+    display: block;
+    max-width: 100%;
+    max-height: 160px;
+    width: auto;
+    height: auto;
+    margin: 4px 0 14px;
+    background: white;
+    border: 1px solid var(--line);
+    border-radius: 8px;
+  }
   table { width: 100%; border-collapse: collapse; font-variant-numeric: tabular-nums; }
   th, td { text-align: left; padding: 5px 6px; border-bottom: 1px solid var(--line); vertical-align: top; }
   th { font-size: 12px; color: var(--muted); font-weight: 600; }
   tr.click { cursor: pointer; }
   tr.detail td { background: #fbf8f3; font-size: 13px; }
   .hyp { color: var(--muted); }
-  ol { margin: 0; padding-left: 18px; }
-  ol li { margin: 3px 0; }
   @media (max-width: 800px) {
-    .cards, .charts, .split { grid-template-columns: 1fr; }
+    .charts, .split { grid-template-columns: 1fr; }
     header { flex-direction: column; align-items: flex-start; }
   }
 </style>
@@ -139,37 +137,51 @@
 <main>
   <p id="error" class="error"></p>
   <p id="note" class="note" hidden></p>
-  <section id="cards" class="cards"></section>
   <section class="charts">
     <figure>
-      <figcaption>Reward. Line is the batch mean. The band is the worst and best draw. Dots are the review sentence.</figcaption>
+      <figcaption>Reward</figcaption>
       <canvas id="chart-reward"></canvas>
     </figure>
     <figure>
-      <figcaption>Character error rate. Same marks as the reward chart. Lower is a closer read.</figcaption>
+      <figcaption>CER</figcaption>
       <canvas id="chart-cer"></canvas>
     </figure>
     <figure>
-      <figcaption>KL to the frozen anchor, per step. This is how far the sampled strokes moved from the base model.</figcaption>
+      <figcaption>KL</figcaption>
       <canvas id="chart-kl"></canvas>
     </figure>
     <figure>
-      <figcaption>Mean pen steps in the batch. A falling line is the policy writing shorter strokes.</figcaption>
+      <figcaption>Steps</figcaption>
       <canvas id="chart-steps"></canvas>
     </figure>
   </section>
   <section class="panel">
-    <h2>Review sheets</h2>
+    <h2>Samples</h2>
+    <div class="nav">
+      <button type="button" id="gen-older">Older</button>
+      <select id="gen-pick"></select>
+      <button type="button" id="gen-newer">Newer</button>
+    </div>
+    <img id="gen-sheet" class="sheet" alt="Training samples for the selected update" hidden>
+    <div id="gen-lines"></div>
+    <p id="gen-missing" class="quiet">No samples yet.</p>
+  </section>
+  <section class="panel">
+    <h2>Review</h2>
+    <div class="nav">
+      <button type="button" id="review-older">Older</button>
+      <select id="review-pick"></select>
+      <button type="button" id="review-newer">Newer</button>
+    </div>
     <div class="split">
       <div>
-        <div id="checkpoints" class="checks"></div>
         <img id="sheet" class="sheet" alt="Review sheet for the selected checkpoint" hidden>
         <p id="sheet-missing" class="quiet" hidden></p>
       </div>
       <div>
         <table>
           <thead>
-            <tr><th>#</th><th>Steps</th><th>CER</th><th>Reward</th><th>Read</th></tr>
+            <tr><th>Temp</th><th>CER</th><th>Reward</th><th>Read</th></tr>
           </thead>
           <tbody id="review-body"></tbody>
         </table>
@@ -178,20 +190,14 @@
   </section>
   <section class="panel">
     <h2>Updates</h2>
-    <p id="update-note" class="quiet">Click a row to see each draw.</p>
     <table>
       <thead>
         <tr>
-          <th>Update</th><th>Block</th><th>Min</th><th>Reward</th><th>CER</th>
-          <th>KL</th><th>Loss</th><th>Grad</th><th>Steps</th><th>Example</th>
+          <th>Update</th><th>Reward</th><th>CER</th><th>KL</th><th>Steps</th>
         </tr>
       </thead>
       <tbody id="update-body"></tbody>
     </table>
-  </section>
-  <section class="panel">
-    <h2>Activity</h2>
-    <ol id="activity"></ol>
   </section>
 </main>
 <script>
@@ -201,6 +207,7 @@ const state = {
   run: null,
   block: null,
   expanded: null,
+  gen: null,
   token: "",
 };
 
@@ -251,10 +258,6 @@ function paintStatus(rows) {
   pill.className = "pill" + (kind ? " " + kind : "");
 }
 
-function card(label, value) {
-  return `<div class="card"><span>${esc(label)}</span><strong>${esc(value)}</strong></div>`;
-}
-
 function points(rows, yKey) {
   return rows.filter((row) => row.type === "update" && row[yKey] != null)
     .map((row) => ({ x: row.update, y: row[yKey] }));
@@ -270,6 +273,44 @@ function dots(rows, yKey) {
     .map((row) => ({ x: row.update, y: row[yKey] }));
 }
 
+function axisDigits(span) {
+  if (!(span > 0)) return 0;
+  const rough = Math.ceil(-Math.log10(span / 4));
+  if (!Number.isFinite(rough)) return 0;
+  return Math.min(4, Math.max(0, rough));
+}
+
+function fitLine(points) {
+  const n = points.length;
+  if (n < 2) return null;
+  let sx = 0;
+  let sy = 0;
+  let sxx = 0;
+  let sxy = 0;
+  let xa = points[0].x;
+  let xb = points[0].x;
+  for (const point of points) {
+    sx += point.x;
+    sy += point.y;
+    sxx += point.x * point.x;
+    sxy += point.x * point.y;
+    if (point.x < xa) xa = point.x;
+    if (point.x > xb) xb = point.x;
+  }
+  const den = n * sxx - sx * sx;
+  if (den === 0) return null;
+  const slope = (n * sxy - sx * sy) / den;
+  const intercept = (sy - slope * sx) / n;
+  return { slope, intercept, xa, xb };
+}
+
+function trendText(slope) {
+  const per = slope * 100;
+  const abs = Math.abs(per);
+  const digits = abs >= 100 ? 0 : abs >= 10 ? 1 : abs >= 1 ? 2 : abs >= 0.01 ? 3 : 4;
+  return (per > 0 ? "+" : "") + per.toFixed(digits) + " / 100 updates";
+}
+
 function drawChart(canvas, spec) {
   const width = canvas.clientWidth;
   const height = canvas.clientHeight;
@@ -280,32 +321,41 @@ function drawChart(canvas, spec) {
   const ctx = canvas.getContext("2d");
   ctx.setTransform(ratio, 0, 0, ratio, 0, 0);
   ctx.clearRect(0, 0, width, height);
-  const all = [];
-  for (const series of spec.series) all.push(...series.points);
-  if (spec.band) {
-    for (const point of spec.band) all.push({ x: point.x, y: point.y0 }, { x: point.x, y: point.y1 });
+  const line = [];
+  for (const series of spec.series) line.push(...series.points);
+  if (spec.dots) line.push(...spec.dots);
+  const fit = fitLine((spec.series[0] && spec.series[0].points) || []);
+  if (fit) {
+    line.push(
+      { x: fit.xa, y: fit.intercept + fit.slope * fit.xa },
+      { x: fit.xb, y: fit.intercept + fit.slope * fit.xb },
+    );
   }
-  if (spec.dots) all.push(...spec.dots);
+  const xPoints = line.slice();
+  if (spec.band) {
+    for (const point of spec.band) {
+      xPoints.push({ x: point.x, y: point.y0 }, { x: point.x, y: point.y1 });
+    }
+  }
   const pad = { l: 46, r: 12, t: 12, b: 24 };
-  if (!all.length) {
+  if (!xPoints.length) {
     ctx.fillStyle = "#5e584f";
     ctx.font = "13px ui-sans-serif, system-ui, sans-serif";
     ctx.fillText("No points yet", pad.l, height / 2);
     return;
   }
-  let x0 = Math.min(...all.map((point) => point.x));
-  let x1 = Math.max(...all.map((point) => point.x));
+  let x0 = Math.min(...xPoints.map((point) => point.x));
+  let x1 = Math.max(...xPoints.map((point) => point.x));
   if (x0 === x1) { x0 -= 1; x1 += 1; }
-  const ys = all.map((point) => point.y);
-  let y0 = spec.yMin == null ? Math.min(...ys) : spec.yMin;
-  let y1 = spec.yMax == null ? Math.max(...ys) : spec.yMax;
-  if (spec.grow) y1 = Math.max(y1, ...ys);
-  if (spec.yMin == null || spec.yMax == null) {
-    const span = y1 - y0 || Math.abs(y1) || 1;
-    if (spec.yMin == null) y0 -= span * 0.08;
-    if (spec.yMax == null) y1 += span * 0.08;
-  }
+  const ySource = line.length ? line : xPoints;
+  const ys = ySource.map((point) => point.y);
+  let y0 = Math.min(...ys);
+  let y1 = Math.max(...ys);
+  const span = y1 - y0 || Math.abs(y1) || 1;
+  y0 -= span * 0.08;
+  y1 += span * 0.08;
   if (y0 === y1) y1 = y0 + 1;
+  const digits = axisDigits(y1 - y0);
   const plotW = width - pad.l - pad.r;
   const plotH = height - pad.t - pad.b;
   const sx = (x) => pad.l + (x - x0) / (x1 - x0) * plotW;
@@ -320,10 +370,14 @@ function drawChart(canvas, spec) {
     ctx.moveTo(pad.l, sy(y));
     ctx.lineTo(width - pad.r, sy(y));
     ctx.stroke();
-    ctx.fillText(y.toFixed(spec.digits), 4, sy(y) + 3);
+    ctx.fillText(y.toFixed(digits), 4, sy(y) + 3);
   }
   ctx.fillText(String(Math.round(x0)), pad.l, height - 6);
   ctx.fillText(String(Math.round(x1)), width - pad.r - 24, height - 6);
+  ctx.save();
+  ctx.beginPath();
+  ctx.rect(pad.l, pad.t, plotW, plotH);
+  ctx.clip();
   if (spec.band && spec.band.length) {
     ctx.beginPath();
     spec.band.forEach((point, i) => {
@@ -351,6 +405,16 @@ function drawChart(canvas, spec) {
     ctx.lineWidth = 1.6;
     ctx.stroke();
   }
+  if (fit) {
+    ctx.beginPath();
+    ctx.setLineDash([5, 4]);
+    ctx.moveTo(sx(fit.xa), sy(fit.intercept + fit.slope * fit.xa));
+    ctx.lineTo(sx(fit.xb), sy(fit.intercept + fit.slope * fit.xb));
+    ctx.strokeStyle = "#2456a3";
+    ctx.lineWidth = 1.5;
+    ctx.stroke();
+    ctx.setLineDash([]);
+  }
   if (spec.dots) {
     ctx.fillStyle = "#9a4318";
     for (const point of spec.dots) {
@@ -359,6 +423,13 @@ function drawChart(canvas, spec) {
       ctx.fill();
     }
   }
+  ctx.restore();
+  if (fit) {
+    const text = trendText(fit.slope);
+    ctx.font = "11px ui-sans-serif, system-ui, sans-serif";
+    ctx.fillStyle = "#2456a3";
+    ctx.fillText(text, width - pad.r - ctx.measureText(text).width, pad.t + 11);
+  }
 }
 
 function drawCharts(rows) {
@@ -366,41 +437,182 @@ function drawCharts(rows) {
     series: [{ color: "#1f4b3a", points: points(rows, "reward_mean") }],
     band: band(rows, "reward_min", "reward_max"),
     dots: dots(rows, "reward_mean"),
-    yMin: 0, yMax: 1, digits: 2,
   });
   drawChart(document.getElementById("chart-cer"), {
     series: [{ color: "#1f4b3a", points: points(rows, "cer_mean") }],
     band: band(rows, "cer_min", "cer_max"),
     dots: dots(rows, "cer_mean"),
-    yMin: 0, yMax: 1, grow: true, digits: 2,
   });
   drawChart(document.getElementById("chart-kl"), {
     series: [{ color: "#1f4b3a", points: points(rows, "kl") }],
-    yMin: 0, yMax: null, digits: 3,
   });
   drawChart(document.getElementById("chart-steps"), {
     series: [{ color: "#1f4b3a", points: points(rows, "steps_mean") }],
-    digits: 0,
   });
 }
 
 function sessionLine(session) {
   const bits = [];
-  if (session.loop) bits.push(session.loop);
-  if (session.policy) bits.push(session.policy);
-  if (session.device) bits.push("sampler " + session.device);
-  if (session.reward_device) bits.push("TrOCR " + session.reward_device);
+  if (session.reward) bits.push(session.reward);
   if (session.batch) bits.push(session.batch + " × " + (session.k || "?"));
-  if (session.k && !session.batch) bits.push("k=" + session.k);
-  if (session.temperature != null) bits.push("temp " + session.temperature);
-  if (session.sharpen != null) bits.push("sharpen " + session.sharpen);
-  if (session.kl_coef != null) bits.push("kl coef " + session.kl_coef);
-  if (session.lr != null) bits.push("lr " + session.lr);
+  else if (session.k) bits.push("k=" + session.k);
+  if (session.temperature_min != null && session.temperature_max != null) {
+    const shape = session.temperature_distribution === "normal" ? "normal " : "";
+    bits.push(shape + session.temperature_min + "–" + session.temperature_max);
+  } else if (session.temperature != null) bits.push("temp " + session.temperature);
   return bits.join("  ·  ");
 }
 
+function byLabelDescending(draws) {
+  const order = [];
+  const groups = new Map();
+  for (const draw of draws || []) {
+    const label = draw.text || "";
+    if (!groups.has(label)) {
+      groups.set(label, []);
+      order.push(label);
+    }
+    groups.get(label).push(draw);
+  }
+  return order.map((label, index) => ({
+    index,
+    label,
+    draws: groups.get(label).slice().sort((a, b) => {
+      const left = a.reward == null ? -Infinity : Number(a.reward);
+      const right = b.reward == null ? -Infinity : Number(b.reward);
+      return right - left;
+    }),
+  }));
+}
+
+function sampleImage(name) {
+  if (!name) return "";
+  return `<img class="sample" alt="Handwriting for this sample" src="/sheets/${encodeURIComponent(name)}">`;
+}
+
+function samplePicture(draw, placeholders) {
+  const saved = sampleImage(draw.image);
+  if (saved) return saved;
+  if (placeholders) return '<div class="sample-slot"></div>';
+  return "";
+}
+
+function sampleTables(draws, placeholders) {
+  const groups = byLabelDescending(draws);
+  if (!groups.length) return "";
+  return groups.map((group) => {
+    const rows = group.draws.map((draw) => {
+      const picture = samplePicture(draw, placeholders);
+      const under = picture
+        ? `<tr class="sample-pic"><td colspan="4">${picture}</td></tr>`
+        : "";
+      return `
+      <tr>
+        <td>${num(draw.reward, 3)}</td>
+        <td>${num(draw.temperature, 2)}</td>
+        <td>${num(draw.cer, 3)}</td>
+        <td>${esc(draw.hyp || draw.skipped || "")}</td>
+      </tr>${under}`;
+    }).join("");
+    return `<p class="sample-prompt">${esc(group.label)}</p>
+      <table>
+        <thead><tr><th>Reward</th><th>Temp</th><th>CER</th><th>Read</th></tr></thead>
+        <tbody>${rows}</tbody>
+      </table>`;
+  }).join("");
+}
+
+const sheetCrops = new Map();
+
+function loadSheetCrops(url) {
+  if (sheetCrops.has(url)) return sheetCrops.get(url);
+  const pending = new Promise((resolve) => {
+    const img = new Image();
+    img.onload = () => resolve(cropSheet(img));
+    img.onerror = () => resolve([]);
+    img.src = url;
+  });
+  sheetCrops.set(url, pending);
+  return pending;
+}
+
+function cropSheet(img) {
+  const w = img.naturalWidth;
+  const h = img.naturalHeight;
+  if (!w || !h) return [];
+  const canvas = document.createElement("canvas");
+  canvas.width = w;
+  canvas.height = h;
+  const ctx = canvas.getContext("2d", { willReadFrequently: true });
+  ctx.drawImage(img, 0, 0);
+  const data = ctx.getImageData(0, 0, w, h).data;
+  const borders = [];
+  for (let y = 0; y < h; y++) {
+    let gray = 0;
+    const row = y * w * 4;
+    for (let x = 0; x < w; x++) {
+      const i = row + x * 4;
+      const dist = Math.abs(data[i] - 210) + Math.abs(data[i + 1] - 210) + Math.abs(data[i + 2] - 210);
+      if (dist <= 18) gray += 1;
+    }
+    if (gray > 300) borders.push(y);
+  }
+  if (!borders.length || borders.length % 2 !== 0) return [];
+  const urls = [];
+  for (let i = 0; i < borders.length; i += 2) {
+    const top = borders[i];
+    const bottom = borders[i + 1];
+    const span = bottom - top;
+    if (span < 8 || span > 220) return [];
+    if (i > 0 && top - borders[i - 1] > 80) return [];
+    let left = w;
+    let right = 0;
+    const edge = top * w * 4;
+    for (let x = 0; x < w; x++) {
+      const j = edge + x * 4;
+      const dist = Math.abs(data[j] - 210) + Math.abs(data[j + 1] - 210) + Math.abs(data[j + 2] - 210);
+      if (dist <= 18) {
+        if (x < left) left = x;
+        if (x > right) right = x;
+      }
+    }
+    if (right <= left) return [];
+    const tile = document.createElement("canvas");
+    tile.width = right - left + 1;
+    tile.height = span + 1;
+    tile.getContext("2d").drawImage(canvas, left, top, tile.width, tile.height, 0, 0, tile.width, tile.height);
+    urls.push(tile.toDataURL("image/png"));
+  }
+  return urls;
+}
+
+function fillSampleSlots(root, urls) {
+  if (!root) return false;
+  const slots = root.querySelectorAll(".sample-slot");
+  if (!slots.length || slots.length !== urls.length) return false;
+  slots.forEach((slot, index) => {
+    slot.innerHTML = `<img class="sample" alt="Handwriting for this sample" src="${urls[index]}">`;
+  });
+  return true;
+}
+
+function attachSheetCrops(url, root) {
+  if (!url || !root) return;
+  root.dataset.sheet = url;
+  loadSheetCrops(url).then((urls) => {
+    if (!root.isConnected || root.dataset.sheet !== url) return;
+    if (fillSampleSlots(root, urls)) return;
+    if (root.id !== "gen-lines") return;
+    const genImg = document.getElementById("gen-sheet");
+    genImg.src = url;
+    genImg.dataset.src = url;
+    genImg.hidden = false;
+    root.querySelectorAll("tr.sample-pic").forEach((row) => row.remove());
+  });
+}
+
 function reviewsOf(rows) {
-  return rows.filter((row) => row.type === "review" || (row.sheet && row.type === "update"));
+  return rows.filter((row) => row.type === "review");
 }
 
 function selectedReview(rows) {
@@ -418,7 +630,7 @@ function render() {
   const { id, ids, rows } = currentRows();
   paintStatus(rows);
   const token = [
-    state.events.length, state.offset, id, state.block, state.expanded,
+    state.events.length, state.offset, id, state.block, state.expanded, state.gen,
   ].join(":");
   if (token === state.token) return;
   state.token = token;
@@ -437,30 +649,52 @@ function render() {
     note.hidden = true;
   }
 
+  const samples = rows.filter((row) => row.type === "update" && row.sheet);
+  const chosen = samples.find((row) => String(row.update) === String(state.gen)) || samples[samples.length - 1] || null;
+  const genPick = document.getElementById("gen-pick");
+  genPick.innerHTML = samples.slice().reverse().map((row) =>
+    `<option value="${row.update}">${row.update} · reward ${num(row.reward_mean, 3)} · CER ${num(row.cer_mean, 3)}</option>`
+  ).join("");
+  if (chosen) genPick.value = String(chosen.update);
+  const genIndex = chosen ? samples.findIndex((row) => row.update === chosen.update) : -1;
+  document.getElementById("gen-older").disabled = genIndex <= 0;
+  document.getElementById("gen-newer").disabled = genIndex < 0 || genIndex >= samples.length - 1;
+  const genImg = document.getElementById("gen-sheet");
+  const genMissing = document.getElementById("gen-missing");
+  const genLines = document.getElementById("gen-lines");
+  const piecewise = chosen && (chosen.draws || []).some((draw) => draw.image);
+  const stacked = Boolean(chosen && chosen.sheet && !piecewise && (chosen.draws || []).length);
+  genMissing.hidden = Boolean(chosen);
+  genLines.innerHTML = sampleTables(chosen && chosen.draws, stacked);
+  if (stacked) {
+    genImg.hidden = true;
+    genImg.removeAttribute("src");
+    delete genImg.dataset.src;
+    attachSheetCrops("/sheets/" + encodeURIComponent(chosen.sheet), genLines);
+  } else if (chosen && chosen.sheet && !piecewise) {
+    const next = "/sheets/" + encodeURIComponent(chosen.sheet);
+    genImg.dataset.src = next;
+    genImg.src = next;
+    genImg.hidden = false;
+  } else {
+    genImg.hidden = true;
+    genImg.removeAttribute("src");
+    delete genImg.dataset.src;
+  }
+
   const updates = rows.filter((row) => row.type === "update");
-  const last = updates[updates.length - 1];
   const reviews = rows.filter((row) => row.type === "review");
-  const best = [...reviews].reverse().find((row) => row.best) || reviews[reviews.length - 1];
-  document.getElementById("cards").innerHTML = [
-    card("Updates", last ? String(last.update) : "0"),
-    card("Reward", last ? num(last.reward_mean, 3) : "—"),
-    card("CER", last ? num(last.cer_mean, 3) : "—"),
-    card("KL", last ? num(last.kl, 4) : "—"),
-    card("Loss", last ? num(last.loss, 4) : "—"),
-    card("Grad", last ? num(last.grad, 3) : "—"),
-    card("Steps", last ? num(last.steps_mean, 0) : "—"),
-    card("Best review", best ? num(best.reward_mean, 3) : "—"),
-  ].join("");
 
   const review = selectedReview(rows);
-  const checks = document.getElementById("checkpoints");
-  checks.innerHTML = reviews.map((row) => {
-    const on = review && row.block === review.block && row.update === review.update;
-    const label = "ckpt " + String(row.block).padStart(4, "0")
-      + "  cer " + num(row.cer_mean, 2)
-      + (row.best ? "  best" : "");
-    return `<button type="button" class="${on ? "on" : ""}" data-block="${row.block}">${esc(label)}</button>`;
-  }).join("") || `<span class="quiet">No review sheet in this run.</span>`;
+  const reviewPick = document.getElementById("review-pick");
+  reviewPick.innerHTML = reviews.slice().reverse().map((row) => {
+    const mark = row.best ? " · best" : "";
+    return `<option value="${row.block}">ckpt ${String(row.block).padStart(4, "0")} · reward ${num(row.reward_mean, 3)} · CER ${num(row.cer_mean, 3)}${mark}</option>`;
+  }).join("");
+  if (review) reviewPick.value = String(review.block);
+  const reviewIndex = review ? reviews.findIndex((row) => row.block === review.block && row.update === review.update) : -1;
+  document.getElementById("review-older").disabled = reviewIndex <= 0;
+  document.getElementById("review-newer").disabled = reviewIndex < 0 || reviewIndex >= reviews.length - 1;
 
   const img = document.getElementById("sheet");
   const missing = document.getElementById("sheet-missing");
@@ -477,73 +711,48 @@ function render() {
     img.removeAttribute("src");
     delete img.dataset.src;
     missing.hidden = false;
-    missing.textContent = "This checkpoint has no sheet image.";
+    missing.textContent = reviews.length ? "No sheet for this review." : "No reviews yet.";
   }
   const body = document.getElementById("review-body");
   const draws = review && review.draws ? review.draws : [];
-  body.innerHTML = draws.map((draw, i) => `
+  body.innerHTML = draws.map((draw) => `
     <tr>
-      <td>${i + 1}</td>
-      <td>${num(draw.steps, 0)}</td>
+      <td>${num(draw.temperature, 2)}</td>
       <td>${num(draw.cer, 2)}</td>
       <td>${num(draw.reward, 3)}</td>
       <td>${esc(draw.hyp || "")}</td>
-    </tr>`).join("") || `<tr><td colspan="5" class="quiet">No review draws.</td></tr>`;
+    </tr>`).join("") || `<tr><td colspan="4" class="quiet">No review draws.</td></tr>`;
 
   const shown = updates.slice(-40);
-  const updateNote = document.getElementById("update-note");
-  const older = updates.length - shown.length;
-  updateNote.textContent = (older > 0 ? `Showing the last ${shown.length} of ${updates.length} updates. ` : "")
-    + "Click a row to see each draw.";
   document.getElementById("update-body").innerHTML = shown.map((row) => {
     const open = String(state.expanded) === String(row.update);
-    const example = row.example
-      ? `${esc(row.example.text)} → <span class="hyp">${esc(row.example.hyp)}</span>`
-      : "";
     const head = `
       <tr class="click" data-update="${row.update}">
         <td>${row.update}</td>
-        <td>${row.block ?? "—"}</td>
-        <td>${num(row.elapsed_min, 1)}</td>
         <td>${num(row.reward_mean, 3)}</td>
         <td>${num(row.cer_mean, 3)}</td>
-        <td>${num(row.kl, 4)}</td>
-        <td>${num(row.loss, 4)}</td>
-        <td>${num(row.grad, 3)}</td>
+        <td>${num(row.kl, 3)}</td>
         <td>${num(row.steps_mean, 0)}</td>
-        <td>${example}</td>
       </tr>`;
     if (!open) return head;
-    const detail = (row.draws || []).map((draw) => `
-      <div>${esc(draw.text || "")}
-        · ${num(draw.steps, 0)} steps
-        · reward ${num(draw.reward, 3)}
-        · cer ${num(draw.cer, 3)}
-        · wcer ${num(draw.wcer, 3)}
-        · adv ${num(draw.advantage, 3)}
-        · kl ${num(draw.kl, 4)}
-        · ${esc(draw.hyp || draw.skipped || "")}
-      </div>`).join("");
-    return head + `<tr class="detail"><td colspan="10">${detail || "No per-draw records."}</td></tr>`;
-  }).reverse().join("") || `<tr><td colspan="10" class="quiet">No updates yet.</td></tr>`;
-
-  const feed = rows.filter((row) => ["draw", "update", "review", "checkpoint", "skip", "stop"].includes(row.type));
-  document.getElementById("activity").innerHTML = feed.slice(-12).reverse().map((row) => {
-    if (row.type === "draw") {
-      return `<li>Drawing update ${row.update ?? "?"} · sample ${row.draw}/${row.k} · ${row.steps} steps · ${esc(row.text)}</li>`;
-    }
-    if (row.type === "update") {
-      return `<li>Update ${row.update} · reward ${num(row.reward_mean, 3)} · cer ${num(row.cer_mean, 3)} · wcer ${num(row.wcer_mean, 3)} · kl ${num(row.kl, 4)}</li>`;
-    }
-    if (row.type === "review") {
-      return `<li>Review ckpt ${String(row.block).padStart(4, "0")} · cer ${num(row.cer_mean, 3)} · reward ${num(row.reward_mean, 3)}${row.best ? " · new best" : ""}</li>`;
-    }
-    if (row.type === "checkpoint") {
-      return `<li>Saved checkpoint ${row.block} after update ${row.update}</li>`;
-    }
-    if (row.type === "skip") return `<li>Skipped a human round · ${esc(row.text || "")}</li>`;
-    return `<li>Stopped · ${esc(row.reason || "")} · update ${row.update ?? "—"}</li>`;
-  }).join("") || "<li>Waiting for the trainer.</li>";
+    const ownPictures = (row.draws || []).some((draw) => draw.image);
+    const stacked = Boolean(row.sheet && !ownPictures && (row.draws || []).length);
+    const detail = byLabelDescending(row.draws).map((group) => {
+      const lines = group.draws.map((draw) => `
+        <div>reward ${num(draw.reward, 3)}
+          · temp ${num(draw.temperature, 2)}
+          · CER ${num(draw.cer, 3)}
+          · ${esc(draw.hyp || draw.skipped || "")}
+        </div>${samplePicture(draw, stacked)}`).join("");
+      return `<p class="sample-prompt">${esc(group.label)}</p>${lines}`;
+    }).join("");
+    const detailBody = detail || "No per-draw records.";
+    return head + `<tr class="detail"><td colspan="5"><div class="draw-detail" data-sheet="${stacked ? esc(row.sheet) : ""}">${detailBody}</div></td></tr>`;
+  }).reverse().join("") || `<tr><td colspan="5" class="quiet">No updates yet.</td></tr>`;
+  const openDetail = document.querySelector("#update-body .draw-detail");
+  if (openDetail && openDetail.dataset.sheet) {
+    attachSheetCrops("/sheets/" + encodeURIComponent(openDetail.dataset.sheet), openDetail);
+  }
 
   requestAnimationFrame(() => drawCharts(rows));
 }
@@ -552,14 +761,47 @@ document.getElementById("run").addEventListener("change", (event) => {
   state.run = event.target.value;
   state.block = null;
   state.expanded = null;
+  state.gen = null;
   state.token = "";
   render();
 });
 
-document.getElementById("checkpoints").addEventListener("click", (event) => {
-  const button = event.target.closest("button[data-block]");
-  if (!button) return;
-  state.block = Number(button.dataset.block);
+function stepSample(delta) {
+  const { rows } = currentRows();
+  const samples = rows.filter((row) => row.type === "update" && row.sheet);
+  const index = Math.max(0, samples.findIndex((row) => String(row.update) === String(state.gen)));
+  const current = state.gen == null ? samples.length - 1 : index;
+  const next = samples[current + delta];
+  if (!next) return;
+  state.gen = String(next.update);
+  state.token = "";
+  render();
+}
+
+document.getElementById("gen-older").addEventListener("click", () => stepSample(-1));
+document.getElementById("gen-newer").addEventListener("click", () => stepSample(1));
+document.getElementById("gen-pick").addEventListener("change", (event) => {
+  state.gen = event.target.value;
+  state.token = "";
+  render();
+});
+
+function stepReview(delta) {
+  const { rows } = currentRows();
+  const reviews = rows.filter((row) => row.type === "review");
+  const index = reviews.findIndex((row) => row.block === state.block);
+  const current = state.block == null ? reviews.length - 1 : Math.max(0, index);
+  const next = reviews[current + delta];
+  if (!next) return;
+  state.block = next.block;
+  state.token = "";
+  render();
+}
+
+document.getElementById("review-older").addEventListener("click", () => stepReview(-1));
+document.getElementById("review-newer").addEventListener("click", () => stepReview(1));
+document.getElementById("review-pick").addEventListener("change", (event) => {
+  state.block = Number(event.target.value);
   state.token = "";
   render();
 });
