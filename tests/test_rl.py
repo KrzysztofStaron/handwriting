@@ -767,6 +767,9 @@ class BeamTests(unittest.TestCase):
         self.assertEqual(len(recorded), 3)
         self.assertEqual(stages[0][0]["used"], 27)
         self.assertEqual(len(stages[0][1]), 27)
+        texts = [item["text"] for item in stages[0][6]]
+        self.assertEqual(texts[:9], ["john"] * 9)
+        self.assertEqual(texts[-9:], ["john is a"] * 9)
         self.assertEqual(scorer.refs, [
             ["john"] * 9,
             ["john is"] * 9,

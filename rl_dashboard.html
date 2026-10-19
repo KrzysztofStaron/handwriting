@@ -126,6 +126,19 @@
   .split { display: grid; grid-template-columns: 1.3fr 1fr; gap: 14px; align-items: start; }
   .nav { display: flex; gap: 8px; align-items: center; margin-bottom: 10px; }
   .nav select { flex: 1; min-width: 0; }
+  .prefix {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    margin: 0 0 12px;
+  }
+  .prefix span {
+    flex: none;
+    font-variant-numeric: tabular-nums;
+    font-weight: 650;
+    min-width: 5.5em;
+  }
+  .prefix input[type="range"] { flex: 1; accent-color: var(--green); }
   button {
     font: inherit;
     border: 1px solid var(--line);
@@ -200,6 +213,10 @@
       <select id="gen-pick"></select>
       <button type="button" id="gen-newer">Newer</button>
     </div>
+    <label class="prefix" id="prefix-nav" hidden>
+      <span id="prefix-count">1 word</span>
+      <input id="prefix-range" type="range" min="1" max="1" value="1" aria-label="Prefix length in words">
+    </label>
     <img id="gen-sheet" class="sheet" alt="Training samples for the selected update" hidden>
     <div id="gen-lines"></div>
     <p id="gen-missing" class="quiet">No samples yet.</p>
@@ -246,6 +263,7 @@ const state = {
   block: null,
   expanded: null,
   gen: null,
+  words: null,
   token: "",
 };
 
@@ -598,6 +616,59 @@ function sessionLine(session) {
   return bits.join("  ·  ");
 }
 
+function prefixGroups(draws) {
+  const order = [];
+  const groups = new Map();
+  for (const draw of draws || []) {
+    const label = draw.text || "";
+    if (!groups.has(label)) {
+      groups.set(label, []);
+      order.push(label);
+    }
+    groups.get(label).push(draw);
+  }
+  return order.map((label, index) => ({
+    index,
+    label,
+    words: label.split(/\s+/).filter(Boolean).length || index + 1,
+    draws: groups.get(label).slice().sort((a, b) => {
+      const left = a.reward == null ? -Infinity : Number(a.reward);
+      const right = b.reward == null ? -Infinity : Number(b.reward);
+      return right - left;
+    }),
+  }));
+}
+
+function prefixAt(groups, words) {
+  if (!groups.length) return null;
+  const picked = words == null ? groups.length : words;
+  const index = Math.min(groups.length, Math.max(1, picked)) - 1;
+  return groups[index];
+}
+
+function paintPrefixSlider(groups) {
+  const nav = document.getElementById("prefix-nav");
+  const input = document.getElementById("prefix-range");
+  const count = document.getElementById("prefix-count");
+  if (groups.length < 2) {
+    nav.hidden = true;
+    return prefixAt(groups, state.words);
+  }
+  nav.hidden = false;
+  const max = groups.length;
+  let words = state.words == null ? max : Math.min(max, Math.max(1, state.words));
+  if (document.activeElement !== input) {
+    input.min = "1";
+    input.max = String(max);
+    input.value = String(words);
+  } else {
+    words = Math.min(max, Math.max(1, Number(input.value) || max));
+    state.words = words;
+  }
+  count.textContent = words === 1 ? "1 word" : words + " words";
+  return groups[words - 1];
+}
+
 function byLabelDescending(draws) {
   const order = [];
   const groups = new Map();
@@ -801,10 +872,12 @@ function render() {
   const genImg = document.getElementById("gen-sheet");
   const genMissing = document.getElementById("gen-missing");
   const genLines = document.getElementById("gen-lines");
-  const piecewise = chosen && (chosen.draws || []).some((draw) => draw.image);
-  const stacked = Boolean(chosen && chosen.sheet && !piecewise && (chosen.draws || []).length);
+  const prefix = paintPrefixSlider(prefixGroups(chosen && chosen.draws));
+  const prefixDraws = prefix ? prefix.draws : [];
+  const piecewise = prefixDraws.some((draw) => draw.image);
+  const stacked = Boolean(chosen && chosen.sheet && !piecewise && prefixDraws.length);
   genMissing.hidden = Boolean(chosen);
-  genLines.innerHTML = sampleTables(chosen && chosen.draws, stacked);
+  genLines.innerHTML = sampleTables(prefixDraws, stacked);
   if (stacked) {
     genImg.hidden = true;
     genImg.removeAttribute("src");
@@ -874,9 +947,11 @@ function render() {
         <td>${num(row.steps_mean, 0)}</td>
       </tr>`;
     if (!open) return head;
-    const ownPictures = (row.draws || []).some((draw) => draw.image);
+    const prefix = prefixAt(prefixGroups(row.draws), state.words);
+    const shownDraws = prefix ? prefix.draws : [];
+    const ownPictures = shownDraws.some((draw) => draw.image);
     const stacked = Boolean(row.sheet && !ownPictures && (row.draws || []).length);
-    const detail = byLabelDescending(row.draws).map((group) => {
+    const detail = byLabelDescending(shownDraws).map((group) => {
       const lines = group.draws.map((draw) => `
         <div>reward ${num(draw.reward, 3)}
           · temp ${num(draw.temperature, 2)}
@@ -919,6 +994,11 @@ function stepSample(delta) {
 
 document.getElementById("gen-older").addEventListener("click", () => stepSample(-1));
 document.getElementById("gen-newer").addEventListener("click", () => stepSample(1));
+document.getElementById("prefix-range").addEventListener("input", (event) => {
+  state.words = Number(event.target.value);
+  render();
+});
+
 document.getElementById("gen-pick").addEventListener("change", (event) => {
   state.gen = event.target.value;
   state.token = "";
