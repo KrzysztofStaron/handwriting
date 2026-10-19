@@ -496,6 +496,7 @@ function drawCharts(rows) {
 function sessionLine(session) {
   const bits = [];
   if (session.reward) bits.push(session.reward);
+  if (session.straightness) bits.push("straight " + session.straightness);
   if (session.batch) bits.push(session.batch + " × " + (session.k || "?"));
   else if (session.k) bits.push("k=" + session.k);
   if (session.temperature_min != null && session.temperature_max != null) {

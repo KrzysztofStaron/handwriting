@@ -47,6 +47,8 @@ uv run python -m vcer.table_build.build
 
 Each vCER update logs plain CER, wCER, TrOCR token confidence, the reward spread, mean output length, and the share of thin glyphs `i l 1 . '`.
 
+After that mix, a crooked line loses a little more. The top and the bottom of the ink are each fit by a straight line, and the two lines share one slope. Slope 0 with the ink sitting on those lines scores 0. A tilt or an arch scores higher, up to 1, and `--straightness` (default 0.05) is the most that can come off the reward. `--straightness 0` turns it off.
+
 TrOCR has no separate clarity score. In greedy decoding the confidence of a read is the geometric mean of the probabilities it assigned to the tokens it chose. `--confidence` (default 0.2) is that term's share of the reward. The term is confidence times `(1 - 2 * min(CER, 1))`, so high confidence raises the reward when the read is close and lowers it when the read is wrong. The rest stays the string score. `--confidence 0` turns it off. It needs `--beams 1`.
 
 Prompts are the whole of Romeo and Juliet (Project Gutenberg ebook 1513), cut on word boundaries into lines of 8–48 characters in the model alphabet. Repeated lines are kept once. The review sentence stays `the old man`, which is not in that file. `--max-chars` defaults to 48. TrOCR resizes every rendering to a 384-pixel square, and a longer line is squashed too thin to read.

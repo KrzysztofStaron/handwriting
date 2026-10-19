@@ -36,6 +36,7 @@ from rl import (
     advantages,
     consistency_sheet,
     draw_temperatures,
+    line_straightness,
     load_policy_and_ref,
     pick_prompts,
     refuse_overwrite_base,
@@ -83,6 +84,10 @@ def parse_args(argv=None):
                              "High confidence raises the reward when CER is low and lowers "
                              "it when CER is high. 0 leaves the string score unchanged. "
                              "Requires --beams 1.")
+    parser.add_argument("--straightness", type=float, default=0.05,
+                        help="Most a crooked line can lose. Two parallel lines sit on the "
+                             "top and bottom of the ink. A flat pair (slope 0, no arch) "
+                             "loses nothing. 0 turns the penalty off.")
     parser.add_argument("--tau", type=float, default=0.1,
                         help="CER forgiven outright by --reward soft.")
     parser.add_argument("--reward-model", default="microsoft/trocr-large-handwritten")
@@ -319,6 +324,12 @@ def one_update(model, ref, scorer, optimizer, prompts, stoi, std, device, args, 
     images = strokes_to_images([item["seq"] for item in rollouts], std)
     refs = [item["text"] for item in rollouts]
     rewards, cers, hyps = scorer.score(images, refs)
+    bends = [line_straightness(item["seq"], std) for item in rollouts]
+    if args.straightness > 0:
+        rewards = [
+            float(reward) - args.straightness * bend
+            for reward, bend in zip(rewards, bends)
+        ]
     wcors = _wcer_list(scorer, len(hyps))
     confs = getattr(scorer, "last_confidence", None)
     advs, ema = advantages(rewards, args.k, ema)
@@ -335,6 +346,7 @@ def one_update(model, ref, scorer, optimizer, prompts, stoi, std, device, args, 
         rewards, cers, hyps, advs, stats.get("traces"), wcors, confs,
         [item["temperature"] for item in rollouts],
         image_names,
+        bends,
     )
     sheet_name = image_names[0] if image_names else None
     return stats, rewards, cers, hyps, refs, ema, draws, wcors, sheet_name
@@ -350,6 +362,12 @@ def write_review(model, scorer, text, stoi, std, device, args, index, out_dir):
         print(f"    draw {draw}/{args.review_k}  temp {temp:.2f}  ({seq.shape[0]} steps)", flush=True)
     images = strokes_to_images(sequences, std)
     rewards, cers, hyps = scorer.score(images, [text] * len(images))
+    bends = [line_straightness(seq, std) for seq in sequences]
+    if args.straightness > 0:
+        rewards = [
+            float(reward) - args.straightness * bend
+            for reward, bend in zip(rewards, bends)
+        ]
     wcors = _wcer_list(scorer, len(hyps))
     confs = list(getattr(scorer, "last_confidence", None) or [])
     for i, (cer, hyp, reward, wcer) in enumerate(zip(cers, hyps, rewards, wcors), start=1):
@@ -392,6 +410,7 @@ def write_review(model, scorer, text, stoi, std, device, args, index, out_dir):
                 "cer": cer,
                 "wcer": wcer,
                 "confidence": confs[i] if i < len(confs) else None,
+                "straightness": bends[i],
                 "reward": reward,
                 "hyp": hyp,
             }
@@ -409,6 +428,8 @@ def main():
         raise SystemExit("--temp-max must be >= --temp-min")
     if args.temp_max <= 0:
         raise SystemExit("--temp-max must be > 0 so some drawings have a density")
+    if args.straightness < 0:
+        raise SystemExit("--straightness must be >= 0")
     if args.k < 1 or args.batch < 1:
         raise SystemExit("--k and --batch must be >= 1")
     if args.review_k < 1:
@@ -492,7 +513,8 @@ def main():
         if scorer.vcer_config:
             cfg = scorer.vcer_config
             print(f"vCER alpha {cfg['alpha']}  k {cfg['k']}  table {cfg['hash']}  "
-                  f"confidence {args.confidence:g}  prompts {args.prompts}", flush=True)
+                  f"confidence {args.confidence:g}  straightness {args.straightness:g}  "
+                  f"prompts {args.prompts}", flush=True)
         optimizer = torch.optim.Adam(model.parameters(), lr=args.lr)
         sidecar = load_sidecar(sidecar_for(ckpt, out_dir))
         ema = None
@@ -529,6 +551,7 @@ def main():
             "prompts_file": args.prompts,
             "vcer": scorer.vcer_config,
             "confidence_weight": args.confidence,
+            "straightness": args.straightness,
             "batch": args.batch,
             "k": args.k,
             "temperature_min": args.temp_min,

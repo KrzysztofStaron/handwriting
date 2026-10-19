@@ -56,6 +56,37 @@ def craft_out(mx=0.3, my=-0.2, sx=0.4, sy=0.4):
     return out
 
 
+def _band_seq(xs, y0, y1):
+    """Stroke offsets whose ink lies between two y curves. std=1 reconstructs them."""
+    import numpy as np
+    xs = np.asarray(xs, dtype=np.float64)
+    y0 = np.broadcast_to(np.asarray(y0, dtype=np.float64), xs.shape)
+    y1 = np.broadcast_to(np.asarray(y1, dtype=np.float64), xs.shape)
+    pts = [(float(x), float(y)) for x, a, b in zip(xs, y0, y1) for y in (a, (a + b) / 2, b)]
+    xy = np.asarray(pts)
+    delta = np.diff(xy, axis=0, prepend=xy[:1])
+    pen = np.zeros((len(xy), 1))
+    return np.concatenate([delta, pen], axis=1)
+
+
+class StraightnessTests(unittest.TestCase):
+    def test_a_flat_band_scores_zero_and_an_arch_does_not(self):
+        import numpy as np
+        from rl import line_straightness
+        xs = np.linspace(0, 400, 48)
+        flat = line_straightness(_band_seq(xs, 0.0, 10.0), std=1.0)
+        arch = 10 * np.sin(np.pi * xs / xs[-1])
+        arched = line_straightness(_band_seq(xs, arch, arch + 10), std=1.0)
+        tilted = line_straightness(_band_seq(xs, 0.025 * xs, 10 + 0.025 * xs), std=1.0)
+        self.assertAlmostEqual(flat, 0.0, places=6)
+        self.assertGreater(arched, 0.2)
+        self.assertGreater(tilted, 0.5)
+        self.assertLess(arched, tilted)
+        self.assertEqual(line_straightness(np.zeros((3, 3)), std=1.0), 0.0)
+        sunk = line_straightness(_band_seq(xs, np.where(xs < 300, 0.0, -10.0), np.where(xs < 300, 10.0, 0.0)), std=1.0)
+        self.assertGreater(sunk, arched)
+
+
 class RewardTests(unittest.TestCase):
     def test_cer_known_distance(self):
         self.assertAlmostEqual(cer("kitten", "sitting"), 0.5)

@@ -141,6 +141,8 @@ Both stages keep `models/best-4.pth` as a frozen KL anchor and never write that 
 | `linear` | `1 - CER` |
 | `soft` | `1` when CER is at or below `--tau` (default 0.1), then a straight fall to 0 at CER = 1 |
 
+A crooked line then loses a little more. Two parallel lines sit on the top and the bottom of the ink and share one slope. A flat pair, slope 0 and no arch, loses nothing. `--straightness` (default 0.05) is the most that penalty can subtract.
+
 Prompts default to `data/romeo_juliet.txt`, the whole play cut into lines of at most 48 characters and sampled at random. `--prompts data/sentences.txt` is the IAM pool. `--max-chars` defaults to 48 so TrOCR's square resize does not squash the line.
 
 **Human preference.** The model draws 3 samples of one prompt. You pick the best. That sample scores 1 and the other two score 0.

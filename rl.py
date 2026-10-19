@@ -201,6 +201,69 @@ def mix_confidence(reward, confidence, weight, cer):
     return (1.0 - weight) * float(reward) + weight * signed
 
 
+def line_straightness(seq, std, bins=12):
+    """How far the ink sits from two parallel horizontal lines. 0 is flat.
+
+    One line rides the top of the writing and one rides the bottom. They share
+    a slope. A flat pair has slope 0 and no leftover arch. The score adds the
+    rise across the whole line and the wobble around those lines, each divided
+    by the text height, and stops at 1. A short or empty stroke scores 0.
+    """
+    if torch.is_tensor(seq):
+        seq = seq.detach().cpu().numpy()
+    seq = np.asarray(seq, dtype=np.float64)
+    if seq.ndim != 2 or seq.shape[0] < 8 or seq.shape[1] < 2 or not np.isfinite(seq).all():
+        return 0.0
+    xy = np.cumsum(seq[:, :2] * float(std), axis=0)
+    order = np.argsort(xy[:, 0], kind="stable")
+    xs = xy[order, 0]
+    ys = xy[order, 1]
+    width = float(xs[-1] - xs[0])
+    if width < 1e-6:
+        return 0.0
+    count = len(xs)
+    bins = int(min(bins, count // 3))
+    if bins < 4:
+        return 0.0
+    edges = np.linspace(0, count, bins + 1, dtype=int)
+    tops, bots, mids = [], [], []
+    for start, stop in zip(edges[:-1], edges[1:]):
+        chunk_y = ys[start:stop]
+        chunk_x = xs[start:stop]
+        if len(chunk_y) < 3:
+            continue
+        bots.append(float(np.percentile(chunk_y, 20)))
+        tops.append(float(np.percentile(chunk_y, 80)))
+        mids.append(float(chunk_x.mean()))
+    if len(mids) < 4:
+        return 0.0
+    x = np.asarray(mids)
+    top = np.asarray(tops)
+    bot = np.asarray(bots)
+
+    def slope(values):
+        centered_x = x - x.mean()
+        centered_y = values - values.mean()
+        spread = float(np.dot(centered_x, centered_x))
+        if spread < 1e-12:
+            return 0.0
+        return float(np.dot(centered_x, centered_y) / spread)
+
+    # Equal weight on the top and the bottom, so one shared slope.
+    slant = 0.5 * (slope(top) + slope(bot))
+    top_offset = float(top.mean() - slant * x.mean())
+    bot_offset = float(bot.mean() - slant * x.mean())
+    leftover = np.concatenate([
+        top - (slant * x + top_offset),
+        bot - (slant * x + bot_offset),
+    ])
+    rms = float(np.sqrt(np.mean(leftover ** 2)))
+    height = max(float(np.mean(top - bot)), 1e-3)
+    tilt = abs(slant) * width / height
+    wobble = rms / height
+    return float(min(1.0, tilt + wobble))
+
+
 def cer_and_reward(reference, hypothesis, kind="exp", tau=0.1, cer_cap=CER_CAP):
     """Return (raw CER, reward). The reward sees CER capped at cer_cap."""
     raw = cer(reference, hypothesis)
