@@ -35,7 +35,22 @@
   }
   h1 { font-size: 22px; font-weight: 650; margin: 0; letter-spacing: -0.02em; }
   h2 { font-size: 15px; margin: 0 0 8px; }
-  .sample-prompt { margin: 16px 0 6px; font-weight: 650; color: var(--ink); }
+  .sample-prompt {
+    display: flex;
+    align-items: baseline;
+    gap: 12px;
+    margin: 16px 0 6px;
+    font-weight: 650;
+    color: var(--ink);
+  }
+  .sample-prompt .len {
+    margin-left: auto;
+    flex: none;
+    font-size: 12px;
+    font-weight: 650;
+    font-variant-numeric: tabular-nums;
+    color: var(--muted);
+  }
   .sub, .note, .quiet { color: var(--muted); }
   .sub { margin: 4px 0 0; min-height: 1.2em; }
   .note {
@@ -329,14 +344,15 @@ function trendText(slope) {
   const per = slope * 100;
   const abs = Math.abs(per);
   const digits = abs >= 100 ? 0 : abs >= 10 ? 1 : abs >= 1 ? 2 : abs >= 0.01 ? 3 : 4;
-  return (per > 0 ? "+" : "") + per.toFixed(digits) + " / 100 updates";
+  return (per > 0 ? "+" : "") + per.toFixed(digits);
 }
 
 function formatClock(seconds) {
-  const total = Math.max(0, Math.round(seconds / 60));
-  const hours = Math.floor(total / 60);
-  const minutes = total % 60;
-  return hours + "h " + minutes + "m";
+  const total = Math.max(0, Math.floor(seconds));
+  const hours = Math.floor(total / 3600);
+  const minutes = Math.floor((total % 3600) / 60);
+  const secs = total % 60;
+  return hours + "h " + minutes + "m " + secs + "s";
 }
 
 function etaState(points, fit, target) {
@@ -518,7 +534,15 @@ function drawChart(canvas, spec) {
 
 function placeChartLabels(spec, fit, points) {
   const badge = spec.badge ? document.getElementById(spec.badge) : null;
-  if (badge) badge.textContent = fit ? trendText(fit.slope) : "";
+  if (badge) {
+    if (fit) {
+      badge.textContent = trendText(fit.slope);
+      badge.title = "per 100 updates";
+    } else {
+      badge.textContent = "";
+      badge.removeAttribute("title");
+    }
+  }
   if (!spec.eta) return;
   if (!fit || spec.perfect == null) {
     rememberClock(spec.eta, null);
@@ -592,6 +616,10 @@ function byLabelDescending(draws) {
   }));
 }
 
+function samplePrompt(label) {
+  return `<p class="sample-prompt"><span>${esc(label)}</span><span class="len">${label.length}</span></p>`;
+}
+
 function sampleImage(name) {
   if (!name) return "";
   return `<img class="sample" alt="Handwriting for this sample" src="/sheets/${encodeURIComponent(name)}">`;
@@ -621,7 +649,7 @@ function sampleTables(draws, placeholders) {
         <td>${esc(draw.hyp || draw.skipped || "")}</td>
       </tr>${under}`;
     }).join("");
-    return `<p class="sample-prompt">${esc(group.label)}</p>
+    return `${samplePrompt(group.label)}
       <table>
         <thead><tr><th>Reward</th><th>Temp</th><th>CER</th><th>Read</th></tr></thead>
         <tbody>${rows}</tbody>
@@ -851,7 +879,7 @@ function render() {
           · CER ${num(draw.cer, 3)}
           · ${esc(draw.hyp || draw.skipped || "")}
         </div>${samplePicture(draw, stacked)}`).join("");
-      return `<p class="sample-prompt">${esc(group.label)}</p>${lines}`;
+      return `${samplePrompt(group.label)}${lines}`;
     }).join("");
     const detailBody = detail || "No per-draw records.";
     return head + `<tr class="detail"><td colspan="5"><div class="draw-detail" data-sheet="${stacked ? esc(row.sheet) : ""}">${detailBody}</div></td></tr>`;
