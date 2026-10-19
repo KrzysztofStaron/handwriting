@@ -153,17 +153,17 @@ def string_reward(reference, hypothesis, alpha=0.8):
     return value, reward
 
 
-def blend_string_reward(cer_value, wcer_value, exact, alpha=0.8):
-    """Plain CER and visual CER, each half of the error, plus an exact match.
+def blend_string_reward(cer_value, wcer_value):
+    """Plain CER and visual CER, equal shares. No exact-match bonus.
 
-    `alpha * (1 - min(0.5 * CER + 0.5 * wCER, 1)) + (1 - alpha) * exact`.
-    Each distance is capped at 1 before the average, so a long hypothesis
-    cannot push the score below the exact-match term. An exact match is 1.
+    `0.5 * (1 - min(CER, 1)) + 0.5 * (1 - min(wCER, 1))`.
+    Confidence then takes its share of this, and straightness is subtracted.
+    A distance above 1 is capped, so a long hypothesis cannot push either
+    term below zero.
     """
     cer_c = min(max(float(cer_value), 0.0), 1.0)
     wcer_c = min(max(float(wcer_value), 0.0), 1.0)
-    distance = 0.5 * cer_c + 0.5 * wcer_c
-    return alpha * (1.0 - distance) + (1.0 - alpha) * float(exact)
+    return 0.5 * (1.0 - cer_c) + 0.5 * (1.0 - wcer_c)
 
 
 def reward_from_cer(value, kind="exp", tau=0.1):
@@ -1218,7 +1218,7 @@ class TrocrScorer:
             _pure, details = vcer.score_batch(references, hyps)
             self.last_details = details
             rewards = [
-                blend_string_reward(item["cer"], item["wcer"], item["exact"], vcer.alpha)
+                blend_string_reward(item["cer"], item["wcer"])
                 for item in details
             ]
             cers = [item["cer"] for item in details]

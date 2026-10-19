@@ -101,8 +101,8 @@ def parse_args(argv=None):
                         help="Word list for --words. One word per line. "
                              "Capitals, digits, and punctuation are dropped.")
     parser.add_argument("--reward", choices=("both", "vcer", "cer", "exp", "linear", "soft"), default="both",
-                        help="both: half plain CER and half visual CER (default), "
-                             "0.8*(1 - 0.5*CER - 0.5*wCER)+0.2*exact. "
+                        help="both: equal plain CER and visual CER (default), then "
+                             "confidence is added and straightness is subtracted. "
                              "vcer: visual distance only. cer: plain CER only. "
                              "exp: exp(-CER). linear: 1-CER. "
                              "soft: 1 at or below --tau, then linear to 0 at CER=1.")

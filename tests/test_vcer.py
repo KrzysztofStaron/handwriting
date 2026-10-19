@@ -236,12 +236,12 @@ class PromptAndTrainerTests(unittest.TestCase):
         args = train_rl.parse_args([])
         self.assertEqual(args.reward, "both")
         pure, diag = VcerReward.load().score_pair("d", "ol")
-        mixed = blend_string_reward(diag["cer"], diag["wcer"], diag["exact"])
+        mixed = blend_string_reward(diag["cer"], diag["wcer"])
         self.assertGreater(mixed, 0.0)
         self.assertLess(mixed, pure)
         self.assertAlmostEqual(
             mixed,
-            0.8 * (1.0 - 0.5 * min(diag["cer"], 1.0) - 0.5 * min(diag["wcer"], 1.0)),
+            0.5 * (1.0 - min(diag["cer"], 1.0)) + 0.5 * (1.0 - min(diag["wcer"], 1.0)),
         )
         self.assertEqual(args.prompts, "data/romeo_juliet.txt")
         self.assertEqual(args.max_chars, 48)

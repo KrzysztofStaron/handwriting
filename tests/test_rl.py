@@ -121,9 +121,9 @@ class RewardTests(unittest.TestCase):
 
     def test_blend_reward_splits_plain_and_visual_error(self):
         from rl import blend_string_reward
-        self.assertAlmostEqual(blend_string_reward(0.0, 0.0, True), 1.0)
-        self.assertAlmostEqual(blend_string_reward(1.0, 0.25, False), 0.8 * (1.0 - 0.625))
-        self.assertAlmostEqual(blend_string_reward(2.0, 3.0, False), 0.0)
+        self.assertAlmostEqual(blend_string_reward(0.0, 0.0), 1.0)
+        self.assertAlmostEqual(blend_string_reward(1.0, 0.25), 0.375)
+        self.assertAlmostEqual(blend_string_reward(2.0, 3.0), 0.0)
 
     def test_cer_ignores_a_space_before_punctuation(self):
         self.assertEqual(cer("hello: world", "hello : world"), 0.0)
