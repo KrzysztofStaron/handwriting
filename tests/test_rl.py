@@ -98,6 +98,14 @@ class RewardTests(unittest.TestCase):
         self.assertEqual(cer("a  b", "a b"), 0.0)
         self.assertEqual(cer('say "hi"', "say \u201chi\u201d"), 0.0)
 
+    def test_cer_ignores_a_space_before_punctuation(self):
+        self.assertEqual(cer("hello: world", "hello : world"), 0.0)
+        self.assertEqual(cer("end.", "end ."), 0.0)
+        self.assertEqual(cer(":", " : "), 0.0)
+        self.assertEqual(cer("a; b: c", "a ; b : c"), 0.0)
+        self.assertGreater(cer("hello, world", "hello,world"), 0.0)
+        self.assertGreater(cer("hello:", "helo:"), 0.0)
+
     def test_reward_shapes(self):
         self.assertAlmostEqual(reward_from_cer(0.0, "exp"), 1.0)
         self.assertAlmostEqual(reward_from_cer(0.25, "linear"), 0.75)

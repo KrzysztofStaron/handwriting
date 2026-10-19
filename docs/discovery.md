@@ -1,6 +1,6 @@
 # vCER discovery
 
-The recognizer reward lives in `rl.py`. `TrocrScorer.score` renders a stroke, asks frozen TrOCR-Large for a string, and turns character error rate into a reward. The error rate is case-sensitive Levenshtein over the reference length, after whitespace is collapsed and curly quotes are straightened. The training default was `exp(-CER)`, capped at a CER of 2. `train_rl.py` calls that once per draw. Nothing in the reward looked at whether the mistaken glyphs look alike.
+The recognizer reward lives in `rl.py`. `TrocrScorer.score` renders a stroke, asks frozen TrOCR-Large for a string, and turns character error rate into a reward. The error rate is case-sensitive Levenshtein over the reference length, after whitespace is collapsed, curly quotes are straightened, and a space before punctuation is dropped. The training default was `exp(-CER)`, capped at a CER of 2. `train_rl.py` calls that once per draw. Nothing in the reward looked at whether the mistaken glyphs look alike.
 
 Targets are whole lines, not characters or words. Supervised training uses `data/sentences.txt`, the IAM transcriptions, one line per stroke sequence. The recognizer run was sampling the 4,138 of those lines that are 8–32 characters and use the 77-character alphabet in `stoi.json`: space, the punctuation `!"# '()+,-./:;?`, digits, and `A-Z` `a-z`. There are no diacritics in the alphabet. TrOCR is decoded with `batch_decode(..., skip_special_tokens=True)` to a Unicode string. The reward never sees tokens.
 

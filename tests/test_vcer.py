@@ -172,6 +172,15 @@ class RewardTests(unittest.TestCase):
         self.assertAlmostEqual(spaced, 1.0)
         composed = prepare("e\u0301")
         self.assertEqual(composed, "\u00e9")
+        self.assertEqual(prepare("hello : world"), "hello: world")
+        self.assertEqual(prepare("end ."), "end.")
+        tight, diag = pair_reward("it is: so", "it is : so", self.table)
+        self.assertAlmostEqual(tight, 1.0)
+        self.assertTrue(diag["exact"])
+        self.assertEqual(diag["cer"], 0.0)
+        apart, apart_diag = pair_reward("hello, world", "hello,world", self.table)
+        self.assertLess(apart, 1.0)
+        self.assertGreater(apart_diag["cer"], 0.0)
 
     def test_batch_matches_pairs(self):
         refs = ["d", "m", "w"]

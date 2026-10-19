@@ -36,6 +36,7 @@ import torch
 from data import collate
 from generate import load_model, sample_batch
 from model import split_params
+from vcer.reward import tighten_punctuation
 
 BASE_CKPT = "models/best-4.pth"
 CER_CAP = 2.0
@@ -98,11 +99,13 @@ def normalize_text(text):
     """Case-sensitive, with whitespace collapsed and curly quotes straightened.
 
     TrOCR sometimes emits typographic quotes for the straight ones in the prompt.
-    Those are not handwriting errors.
+    It also writes a space before punctuation (" :"). Neither is a handwriting
+    error. A space after punctuation is kept.
     """
     if text is None:
         return ""
-    return " ".join(str(text).translate(_QUOTES).strip().split())
+    collapsed = " ".join(str(text).translate(_QUOTES).strip().split())
+    return tighten_punctuation(collapsed)
 
 
 def levenshtein(a, b):

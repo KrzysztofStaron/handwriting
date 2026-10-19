@@ -15,7 +15,7 @@ reward = alpha * (1 - min(wcer, 1)) + (1 - alpha) * exact
 
 `alpha` defaults to 0.8. An exact normalized match scores 1. An empty reference scores 1 only against an empty hypothesis.
 
-Strings are NFC, curly quotes and dashes are straightened, and whitespace is stripped and collapsed. That matches the existing CER normalizer. The distance sees characters, not model tokens.
+Strings are NFC, curly quotes and dashes are straightened, and whitespace is stripped and collapsed. A space immediately before punctuation is dropped, so TrOCR's " :" scores the same as ":". A space after punctuation stays. That matches the existing CER normalizer. The distance sees characters, not model tokens.
 
 Substitution spans are 1..K characters, K defaults to 2 and can be 1, 2, or 3. Insertion and deletion cost 0.6, so a stray dot is cheaper than a random substitution and a deleted word is not free. Substitution costs are at least 0.15, so nothing visual is free. Same letters in different case cost 0.2 when no exact pair is stored.
 

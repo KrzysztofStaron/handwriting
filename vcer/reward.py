@@ -25,14 +25,33 @@ _DEFAULT_TABLE = Path(__file__).resolve().parent / "table.json"
 _CACHE = {}
 
 
+def tighten_punctuation(text):
+    """Drop a space that sits immediately before punctuation.
+
+    TrOCR often writes " :" where the line has ":". That space is not a
+    handwriting error. A space after punctuation stays, so "hello,world"
+    still differs from "hello, world".
+    """
+    out = []
+    for ch in text:
+        if out and out[-1] == " " and unicodedata.category(ch).startswith("P"):
+            out[-1] = ch
+        else:
+            out.append(ch)
+    return "".join(out)
+
+
 def prepare(text, policy="strip_collapse"):
-    """NFC, then the whitespace policy. Curly quotes and dashes are straightened."""
+    """NFC, then the whitespace policy. Curly quotes and dashes are straightened.
+
+    `strip_collapse` also drops a space before punctuation.
+    """
     text = unicodedata.normalize("NFC", "" if text is None else str(text))
     text = text.translate(_QUOTES)
     if policy == "none":
         return text
     if policy == "strip_collapse":
-        return " ".join(text.strip().split())
+        return tighten_punctuation(" ".join(text.strip().split()))
     raise ValueError(f"unknown normalization {policy!r}")
 
 
