@@ -128,8 +128,12 @@ class NumpyHandwritingModel:
             x = np.array([dx, dy, pen_up], np.float32)
             yield float(dx), float(dy), pen_up, phi
 
-            # stop (paper sec. 5.3): window slid off the end of the text, then a grace
+            # Stop once the window has slid off the text, after the pen lifts, so
+            # the last letter finishes and the next character never starts.
+            # tail_steps caps a pen that stays down. Mirrors generate.py.
             if reached_end_at is None and t >= min_steps and phi_end > phi.max():
                 reached_end_at = t
-            if reached_end_at is not None and t - reached_end_at >= tail_steps:
+            if reached_end_at is not None and (
+                pen_up == 1.0 or t - reached_end_at >= tail_steps
+            ):
                 break

@@ -67,12 +67,12 @@ class HandwritingModel(nn.Module):
         phi = phi * c_mask                              # ignore padded text positions
         w = torch.bmm(phi.unsqueeze(1), c).squeeze(1)   # (B, V)   eq 47
 
-        # phi at the PHANTOM position u=U, one past the last character (positions are
-        # 0-indexed 0..U-1, so U is the paper's "U+1"). The paper's stop criterion
-        # (sec. 5.3): sampling ends once this outweighs phi at every real char, i.e.
-        # the soft window has slid off the end of the text. Computed here so the
-        # sampler gets it for free; it plays no role in training.
-        phi_end = (alpha * torch.exp(-beta * (kappa - float(U)) ** 2)).sum(dim=1)  # (B,)
+        # phi at the PHANTOM position, one past the last real character. Padding
+        # makes c.shape[1] longer than that character, so the position comes from
+        # the mask. The paper's stop (sec. 5.3) fires once this outweighs phi at
+        # every real char. It plays no role in the training loss.
+        length = c_mask.sum(dim=1)  # (B,)
+        phi_end = (alpha * torch.exp(-beta * (kappa - length.unsqueeze(1)) ** 2)).sum(dim=1)
         return w, kappa, phi, phi_end
 
     def forward(self, x, c, c_mask, hidden=None):
