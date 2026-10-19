@@ -566,7 +566,7 @@ class BeamTests(unittest.TestCase):
         self.assertEqual(stats["used"], 4)
         self.assertTrue(stats["stepped"])
 
-    def test_novel_line_is_three_words_from_the_alphabet(self):
+    def test_novel_line_is_ten_short_words_from_the_alphabet(self):
         state = random.getstate()
         random.seed(0)
         try:
@@ -576,20 +576,20 @@ class BeamTests(unittest.TestCase):
             for _ in range(40):
                 line = novel_line(stoi)
                 words = line.split(" ")
-                self.assertEqual(len(words), 3)
+                self.assertEqual(len(words), 10)
                 self.assertEqual(line, " ".join(words))
                 self.assertLessEqual(len(line), 48)
                 for word in words:
-                    self.assertGreaterEqual(len(word), 4)
-                    self.assertLessEqual(len(word), 12)
+                    self.assertGreaterEqual(len(word), 1)
+                    self.assertLessEqual(len(word), 4)
                     self.assertTrue(set(word) <= letters)
                 seen.update(line)
             self.assertTrue(seen & set("ab"))
             self.assertIn("C", seen)
             self.assertTrue(seen & set("12"))
-            tight = novel_line(stoi, max_chars=14)
-            self.assertEqual(len(tight.split(" ")), 3)
-            self.assertLessEqual(len(tight), 14)
+            tight = novel_line(stoi, max_chars=19)
+            self.assertEqual([len(word) for word in tight.split(" ")], [1] * 10)
+            self.assertLessEqual(len(tight), 19)
         finally:
             random.setstate(state)
 
@@ -604,7 +604,8 @@ class BeamTests(unittest.TestCase):
                 ["the old man"] * 8,
             )
             fresh = [choose_label(prompts, stoi, 1.0) for _ in range(8)]
-            self.assertTrue(all(len(line.split()) == 3 for line in fresh))
+            self.assertTrue(all(len(line.split()) == 10 for line in fresh))
+            self.assertTrue(all(len(word) <= 4 for line in fresh for word in line.split()))
             self.assertTrue(all(set(line) <= set("abcABC012 ") for line in fresh))
         finally:
             random.setstate(state)

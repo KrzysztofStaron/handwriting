@@ -747,11 +747,12 @@ def pick_prompts(prompts, n):
     return [random.choice(prompts) for _ in range(n)]
 
 
-def novel_line(stoi, words=3, min_len=4, max_len=12, max_chars=48):
-    """Three fresh words of letters and digits from the model alphabet.
+def novel_line(stoi, words=10, min_len=1, max_len=4, max_chars=48):
+    """Ten short words of letters and digits from the model alphabet.
 
-    A line like 'aeGyAcs OIxwy sskN1ewuyS'. Every character is in `stoi`,
-    so the policy can be asked to write it. Spaces only separate the words.
+    A line like 'y142 OX7V Fz1M wsaY W5OF M3VV 8Zab c12d eF3g h4'.
+    Each word is at most 4 characters. Every character is in `stoi`.
+    Spaces only separate the words.
     """
     chars = [ch for ch in stoi if ch.isalnum()]
     if not chars:
@@ -777,7 +778,7 @@ def novel_line(stoi, words=3, min_len=4, max_len=12, max_chars=48):
 
 
 def choose_label(prompts, stoi, novel, max_chars=48):
-    """A line from the pool, or with probability `novel` a fresh 3-word string."""
+    """A line from the pool, or with probability `novel` ten short random words."""
     if novel > 0 and random.random() < novel:
         return novel_line(stoi, max_chars=max_chars)
     return pick_prompts(prompts, 1)[0]

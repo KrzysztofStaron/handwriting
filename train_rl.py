@@ -5,7 +5,7 @@ start from a blank page. The best three are kept, and each is continued three
 ways. TrOCR scores the ink of everything written so far against those words
 plus the word just added. The gradient is applied only to the new strokes.
 The 10 samples at a checkpoint are only a review sheet of the full sentence.
-Some training lines are three random words from the model alphabet, so the
+Some training lines are ten short random words from the model alphabet, so the
 policy also writes strings the play does not contain. One logged update is
 the whole line. Its reward, CER, KL, and length are the average of every
 drawing in that line.
@@ -84,9 +84,9 @@ def parse_args(argv=None):
     parser.add_argument("--keep", type=int, default=3,
                         help="Best prefixes carried forward. Each is continued beam/keep times.")
     parser.add_argument("--novel", type=float, default=0.25,
-                        help="Chance a training line is three random words of letters "
-                             "and digits from the model alphabet, instead of a line "
-                             "from --prompts. 0 keeps the file.")
+                        help="Chance a training line is ten random words of at most 4 "
+                             "letters or digits from the model alphabet, instead of a "
+                             "line from --prompts. 0 keeps the file.")
     parser.add_argument("--reward", choices=("cer", "vcer", "exp", "linear", "soft"), default="cer",
                         help="cer: 0.8*(1-min(CER,1))+0.2*exact (default). "
                              "vcer: the same shape with a visual edit distance. "
@@ -363,8 +363,8 @@ def beam_stages(model, ref, scorer, optimizer, prompts, stoi, std, device, args,
     """
     from generate import sample_batch
 
-    # A pinned --text stays as given. Otherwise some lines are three random
-    # words, so the policy also practices strings the play never contains.
+    # A pinned --text stays as given. Otherwise some lines are ten short
+    # random words, so the policy also practices strings the play never contains.
     chance = 0.0 if getattr(args, "text", None) else getattr(args, "novel", 0.0)
     text = choose_label(prompts, stoi, chance, getattr(args, "max_chars", 48))
     prefixes = word_prefixes(text)
@@ -645,7 +645,7 @@ def main():
         std = load_std()
         novel_bit = ""
         if not args.text and args.novel > 0:
-            novel_bit = f"   novel 3-word line on {args.novel:.0%} of draws"
+            novel_bit = f"   novel 10-word line on {args.novel:.0%} of draws"
         print(f"prompts: {len(prompts)}{novel_bit}   "
               f"review sentence: {review_text!r} x {args.review_k}",
               flush=True)
