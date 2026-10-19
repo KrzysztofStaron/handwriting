@@ -1,0 +1,605 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Handwriting RL</title>
+<style>
+  :root {
+    color-scheme: light;
+    --ink: #1c1915;
+    --muted: #5e584f;
+    --line: #e3ddd2;
+    --paper: #f7f4ee;
+    --card: #fffdf9;
+    --green: #1f4b3a;
+    --rust: #9a4318;
+    --live: #1d6b45;
+    --idle: #8a5a12;
+    --stop: #6b6560;
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0;
+    background: var(--paper);
+    color: var(--ink);
+    font: 15px/1.45 ui-sans-serif, system-ui, sans-serif;
+  }
+  header, main { width: min(1120px, calc(100% - 32px)); margin: 0 auto; }
+  header {
+    display: flex;
+    justify-content: space-between;
+    gap: 16px;
+    align-items: flex-end;
+    padding: 22px 0 8px;
+  }
+  h1 { font-size: 22px; font-weight: 650; margin: 0; letter-spacing: -0.02em; }
+  h2 { font-size: 15px; margin: 0 0 8px; }
+  .sub, .note, figcaption, .quiet { color: var(--muted); }
+  .sub { margin: 4px 0 0; min-height: 1.2em; }
+  .note {
+    margin: 8px 0 0;
+    padding: 8px 10px;
+    background: #f3ead7;
+    border-radius: 8px;
+  }
+  .controls { display: flex; gap: 8px; align-items: center; }
+  select {
+    font: inherit;
+    padding: 6px 8px;
+    border: 1px solid var(--line);
+    border-radius: 8px;
+    background: var(--card);
+    color: var(--ink);
+  }
+  .pill {
+    font-size: 13px;
+    font-weight: 650;
+    padding: 4px 10px;
+    border-radius: 999px;
+    background: #ece8e1;
+    color: var(--stop);
+  }
+  .pill.live { background: #e5f4eb; color: var(--live); }
+  .pill.idle { background: #f8efd8; color: var(--idle); }
+  .error { color: #8d1d1d; min-height: 1.2em; margin: 6px 0 0; }
+  .cards {
+    display: grid;
+    grid-template-columns: repeat(4, 1fr);
+    gap: 10px;
+    margin: 14px 0;
+  }
+  .card {
+    background: var(--card);
+    border: 1px solid var(--line);
+    border-radius: 10px;
+    padding: 10px 12px;
+  }
+  .card span { display: block; color: var(--muted); font-size: 12px; }
+  .card strong { font-size: 20px; font-variant-numeric: tabular-nums; }
+  .charts {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 10px;
+  }
+  figure {
+    margin: 0;
+    background: var(--card);
+    border: 1px solid var(--line);
+    border-radius: 10px;
+    padding: 8px 10px 10px;
+  }
+  figcaption { font-size: 13px; margin-bottom: 4px; }
+  canvas { width: 100%; height: 180px; display: block; }
+  section.panel {
+    margin-top: 14px;
+    background: var(--card);
+    border: 1px solid var(--line);
+    border-radius: 10px;
+    padding: 12px;
+  }
+  .split { display: grid; grid-template-columns: 1.3fr 1fr; gap: 14px; align-items: start; }
+  .checks { display: flex; flex-wrap: wrap; gap: 6px; margin-bottom: 8px; }
+  button {
+    font: inherit;
+    border: 1px solid var(--line);
+    background: #fff;
+    border-radius: 999px;
+    padding: 4px 10px;
+    cursor: pointer;
+    color: var(--ink);
+  }
+  button.on { background: var(--green); color: white; border-color: var(--green); }
+  img.sheet { width: 100%; height: auto; background: white; border: 1px solid var(--line); border-radius: 8px; }
+  table { width: 100%; border-collapse: collapse; font-variant-numeric: tabular-nums; }
+  th, td { text-align: left; padding: 5px 6px; border-bottom: 1px solid var(--line); vertical-align: top; }
+  th { font-size: 12px; color: var(--muted); font-weight: 600; }
+  tr.click { cursor: pointer; }
+  tr.detail td { background: #fbf8f3; font-size: 13px; }
+  .hyp { color: var(--muted); }
+  ol { margin: 0; padding-left: 18px; }
+  ol li { margin: 3px 0; }
+  @media (max-width: 800px) {
+    .cards, .charts, .split { grid-template-columns: 1fr; }
+    header { flex-direction: column; align-items: flex-start; }
+  }
+</style>
+</head>
+<body>
+<header>
+  <div>
+    <h1>Handwriting RL</h1>
+    <p id="session" class="sub"></p>
+  </div>
+  <div class="controls">
+    <span id="status" class="pill">Waiting</span>
+    <label>Run <select id="run"></select></label>
+  </div>
+</header>
+<main>
+  <p id="error" class="error"></p>
+  <p id="note" class="note" hidden></p>
+  <section id="cards" class="cards"></section>
+  <section class="charts">
+    <figure>
+      <figcaption>Reward. Line is the batch mean. The band is the worst and best draw. Dots are the review sentence.</figcaption>
+      <canvas id="chart-reward"></canvas>
+    </figure>
+    <figure>
+      <figcaption>Character error rate. Same marks as the reward chart. Lower is a closer read.</figcaption>
+      <canvas id="chart-cer"></canvas>
+    </figure>
+    <figure>
+      <figcaption>KL to the frozen anchor, per step. This is how far the sampled strokes moved from the base model.</figcaption>
+      <canvas id="chart-kl"></canvas>
+    </figure>
+    <figure>
+      <figcaption>Mean pen steps in the batch. A falling line is the policy writing shorter strokes.</figcaption>
+      <canvas id="chart-steps"></canvas>
+    </figure>
+  </section>
+  <section class="panel">
+    <h2>Review sheets</h2>
+    <div class="split">
+      <div>
+        <div id="checkpoints" class="checks"></div>
+        <img id="sheet" class="sheet" alt="Review sheet for the selected checkpoint" hidden>
+        <p id="sheet-missing" class="quiet" hidden></p>
+      </div>
+      <div>
+        <table>
+          <thead>
+            <tr><th>#</th><th>Steps</th><th>CER</th><th>Reward</th><th>Read</th></tr>
+          </thead>
+          <tbody id="review-body"></tbody>
+        </table>
+      </div>
+    </div>
+  </section>
+  <section class="panel">
+    <h2>Updates</h2>
+    <p id="update-note" class="quiet">Click a row to see each draw.</p>
+    <table>
+      <thead>
+        <tr>
+          <th>Update</th><th>Block</th><th>Min</th><th>Reward</th><th>CER</th>
+          <th>KL</th><th>Loss</th><th>Grad</th><th>Steps</th><th>Example</th>
+        </tr>
+      </thead>
+      <tbody id="update-body"></tbody>
+    </table>
+  </section>
+  <section class="panel">
+    <h2>Activity</h2>
+    <ol id="activity"></ol>
+  </section>
+</main>
+<script>
+const state = {
+  events: [],
+  offset: 0,
+  run: null,
+  block: null,
+  expanded: null,
+  token: "",
+};
+
+function esc(value) {
+  return String(value ?? "").replace(/[&<>"']/g, (ch) => ({
+    "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;",
+  }[ch]));
+}
+
+function num(value, digits) {
+  if (value === null || value === undefined || Number.isNaN(Number(value))) return "—";
+  return Number(value).toFixed(digits);
+}
+
+function runs() {
+  const ids = [];
+  const groups = new Map();
+  for (const event of state.events) {
+    const id = event.run || "run";
+    if (!groups.has(id)) {
+      groups.set(id, []);
+      ids.push(id);
+    }
+    groups.get(id).push(event);
+  }
+  return { ids, groups };
+}
+
+function currentRows() {
+  const { ids, groups } = runs();
+  const id = state.run && ids.includes(state.run) ? state.run : ids[ids.length - 1];
+  state.run = id || null;
+  return { id, ids, rows: id ? groups.get(id) : [] };
+}
+
+function statusOf(rows) {
+  if (!rows.length) return ["Waiting", ""];
+  const last = rows[rows.length - 1];
+  if (last.type === "stop") return ["Stopped", ""];
+  if (typeof last.ts === "number" && Date.now() / 1000 - last.ts < 180) return ["Live", "live"];
+  return ["Idle", "idle"];
+}
+
+function paintStatus(rows) {
+  const [label, kind] = statusOf(rows);
+  const pill = document.getElementById("status");
+  pill.textContent = label;
+  pill.className = "pill" + (kind ? " " + kind : "");
+}
+
+function card(label, value) {
+  return `<div class="card"><span>${esc(label)}</span><strong>${esc(value)}</strong></div>`;
+}
+
+function points(rows, yKey) {
+  return rows.filter((row) => row.type === "update" && row[yKey] != null)
+    .map((row) => ({ x: row.update, y: row[yKey] }));
+}
+
+function band(rows, lowKey, highKey) {
+  return rows.filter((row) => row.type === "update" && row[lowKey] != null && row[highKey] != null)
+    .map((row) => ({ x: row.update, y0: row[lowKey], y1: row[highKey] }));
+}
+
+function dots(rows, yKey) {
+  return rows.filter((row) => row.type === "review" && row[yKey] != null && row.update != null)
+    .map((row) => ({ x: row.update, y: row[yKey] }));
+}
+
+function drawChart(canvas, spec) {
+  const width = canvas.clientWidth;
+  const height = canvas.clientHeight;
+  if (width < 10 || height < 10) return;
+  const ratio = window.devicePixelRatio || 1;
+  canvas.width = Math.round(width * ratio);
+  canvas.height = Math.round(height * ratio);
+  const ctx = canvas.getContext("2d");
+  ctx.setTransform(ratio, 0, 0, ratio, 0, 0);
+  ctx.clearRect(0, 0, width, height);
+  const all = [];
+  for (const series of spec.series) all.push(...series.points);
+  if (spec.band) {
+    for (const point of spec.band) all.push({ x: point.x, y: point.y0 }, { x: point.x, y: point.y1 });
+  }
+  if (spec.dots) all.push(...spec.dots);
+  const pad = { l: 46, r: 12, t: 12, b: 24 };
+  if (!all.length) {
+    ctx.fillStyle = "#5e584f";
+    ctx.font = "13px ui-sans-serif, system-ui, sans-serif";
+    ctx.fillText("No points yet", pad.l, height / 2);
+    return;
+  }
+  let x0 = Math.min(...all.map((point) => point.x));
+  let x1 = Math.max(...all.map((point) => point.x));
+  if (x0 === x1) { x0 -= 1; x1 += 1; }
+  const ys = all.map((point) => point.y);
+  let y0 = spec.yMin == null ? Math.min(...ys) : spec.yMin;
+  let y1 = spec.yMax == null ? Math.max(...ys) : spec.yMax;
+  if (spec.grow) y1 = Math.max(y1, ...ys);
+  if (spec.yMin == null || spec.yMax == null) {
+    const span = y1 - y0 || Math.abs(y1) || 1;
+    if (spec.yMin == null) y0 -= span * 0.08;
+    if (spec.yMax == null) y1 += span * 0.08;
+  }
+  if (y0 === y1) y1 = y0 + 1;
+  const plotW = width - pad.l - pad.r;
+  const plotH = height - pad.t - pad.b;
+  const sx = (x) => pad.l + (x - x0) / (x1 - x0) * plotW;
+  const sy = (y) => pad.t + (y1 - y) / (y1 - y0) * plotH;
+  ctx.strokeStyle = "#e3ddd2";
+  ctx.fillStyle = "#5e584f";
+  ctx.font = "11px ui-sans-serif, system-ui, sans-serif";
+  ctx.lineWidth = 1;
+  for (let i = 0; i < 4; i++) {
+    const y = y0 + (y1 - y0) * i / 3;
+    ctx.beginPath();
+    ctx.moveTo(pad.l, sy(y));
+    ctx.lineTo(width - pad.r, sy(y));
+    ctx.stroke();
+    ctx.fillText(y.toFixed(spec.digits), 4, sy(y) + 3);
+  }
+  ctx.fillText(String(Math.round(x0)), pad.l, height - 6);
+  ctx.fillText(String(Math.round(x1)), width - pad.r - 24, height - 6);
+  if (spec.band && spec.band.length) {
+    ctx.beginPath();
+    spec.band.forEach((point, i) => {
+      const x = sx(point.x);
+      if (i === 0) ctx.moveTo(x, sy(point.y1));
+      else ctx.lineTo(x, sy(point.y1));
+    });
+    for (let i = spec.band.length - 1; i >= 0; i--) {
+      ctx.lineTo(sx(spec.band[i].x), sy(spec.band[i].y0));
+    }
+    ctx.closePath();
+    ctx.fillStyle = "rgba(31, 75, 58, 0.13)";
+    ctx.fill();
+  }
+  for (const series of spec.series) {
+    if (!series.points.length) continue;
+    ctx.beginPath();
+    series.points.forEach((point, i) => {
+      const x = sx(point.x);
+      const y = sy(point.y);
+      if (i === 0) ctx.moveTo(x, y);
+      else ctx.lineTo(x, y);
+    });
+    ctx.strokeStyle = series.color;
+    ctx.lineWidth = 1.6;
+    ctx.stroke();
+  }
+  if (spec.dots) {
+    ctx.fillStyle = "#9a4318";
+    for (const point of spec.dots) {
+      ctx.beginPath();
+      ctx.arc(sx(point.x), sy(point.y), 3.5, 0, Math.PI * 2);
+      ctx.fill();
+    }
+  }
+}
+
+function drawCharts(rows) {
+  drawChart(document.getElementById("chart-reward"), {
+    series: [{ color: "#1f4b3a", points: points(rows, "reward_mean") }],
+    band: band(rows, "reward_min", "reward_max"),
+    dots: dots(rows, "reward_mean"),
+    yMin: 0, yMax: 1, digits: 2,
+  });
+  drawChart(document.getElementById("chart-cer"), {
+    series: [{ color: "#1f4b3a", points: points(rows, "cer_mean") }],
+    band: band(rows, "cer_min", "cer_max"),
+    dots: dots(rows, "cer_mean"),
+    yMin: 0, yMax: 1, grow: true, digits: 2,
+  });
+  drawChart(document.getElementById("chart-kl"), {
+    series: [{ color: "#1f4b3a", points: points(rows, "kl") }],
+    yMin: 0, yMax: null, digits: 3,
+  });
+  drawChart(document.getElementById("chart-steps"), {
+    series: [{ color: "#1f4b3a", points: points(rows, "steps_mean") }],
+    digits: 0,
+  });
+}
+
+function sessionLine(session) {
+  const bits = [];
+  if (session.loop) bits.push(session.loop);
+  if (session.policy) bits.push(session.policy);
+  if (session.device) bits.push("sampler " + session.device);
+  if (session.reward_device) bits.push("TrOCR " + session.reward_device);
+  if (session.batch) bits.push(session.batch + " × " + (session.k || "?"));
+  if (session.k && !session.batch) bits.push("k=" + session.k);
+  if (session.temperature != null) bits.push("temp " + session.temperature);
+  if (session.sharpen != null) bits.push("sharpen " + session.sharpen);
+  if (session.kl_coef != null) bits.push("kl coef " + session.kl_coef);
+  if (session.lr != null) bits.push("lr " + session.lr);
+  return bits.join("  ·  ");
+}
+
+function reviewsOf(rows) {
+  return rows.filter((row) => row.type === "review" || (row.sheet && row.type === "update"));
+}
+
+function selectedReview(rows) {
+  const reviews = reviewsOf(rows);
+  if (!reviews.length) return null;
+  if (state.block != null) {
+    const found = reviews.find((row) => row.block === state.block && row.type === "review")
+      || reviews.find((row) => row.block === state.block);
+    if (found) return found;
+  }
+  return reviews[reviews.length - 1];
+}
+
+function render() {
+  const { id, ids, rows } = currentRows();
+  paintStatus(rows);
+  const token = [
+    state.events.length, state.offset, id, state.block, state.expanded,
+  ].join(":");
+  if (token === state.token) return;
+  state.token = token;
+
+  const select = document.getElementById("run");
+  select.innerHTML = ids.map((runId) => `<option value="${esc(runId)}">${esc(runId)}</option>`).join("");
+  if (id) select.value = id;
+
+  const session = rows.find((row) => row.type === "session") || {};
+  document.getElementById("session").textContent = sessionLine(session) || "No session recorded yet.";
+  const note = document.getElementById("note");
+  if (session.note) {
+    note.hidden = false;
+    note.textContent = session.note;
+  } else {
+    note.hidden = true;
+  }
+
+  const updates = rows.filter((row) => row.type === "update");
+  const last = updates[updates.length - 1];
+  const reviews = rows.filter((row) => row.type === "review");
+  const best = [...reviews].reverse().find((row) => row.best) || reviews[reviews.length - 1];
+  document.getElementById("cards").innerHTML = [
+    card("Updates", last ? String(last.update) : "0"),
+    card("Reward", last ? num(last.reward_mean, 3) : "—"),
+    card("CER", last ? num(last.cer_mean, 3) : "—"),
+    card("KL", last ? num(last.kl, 4) : "—"),
+    card("Loss", last ? num(last.loss, 4) : "—"),
+    card("Grad", last ? num(last.grad, 3) : "—"),
+    card("Steps", last ? num(last.steps_mean, 0) : "—"),
+    card("Best review", best ? num(best.reward_mean, 3) : "—"),
+  ].join("");
+
+  const review = selectedReview(rows);
+  const checks = document.getElementById("checkpoints");
+  checks.innerHTML = reviews.map((row) => {
+    const on = review && row.block === review.block && row.update === review.update;
+    const label = "ckpt " + String(row.block).padStart(4, "0")
+      + "  cer " + num(row.cer_mean, 2)
+      + (row.best ? "  best" : "");
+    return `<button type="button" class="${on ? "on" : ""}" data-block="${row.block}">${esc(label)}</button>`;
+  }).join("") || `<span class="quiet">No review sheet in this run.</span>`;
+
+  const img = document.getElementById("sheet");
+  const missing = document.getElementById("sheet-missing");
+  if (review && review.sheet) {
+    const next = "/sheets/" + encodeURIComponent(review.sheet);
+    if (img.dataset.src !== next) {
+      img.dataset.src = next;
+      img.src = next;
+    }
+    img.hidden = false;
+    missing.hidden = true;
+  } else {
+    img.hidden = true;
+    img.removeAttribute("src");
+    delete img.dataset.src;
+    missing.hidden = false;
+    missing.textContent = "This checkpoint has no sheet image.";
+  }
+  const body = document.getElementById("review-body");
+  const draws = review && review.draws ? review.draws : [];
+  body.innerHTML = draws.map((draw, i) => `
+    <tr>
+      <td>${i + 1}</td>
+      <td>${num(draw.steps, 0)}</td>
+      <td>${num(draw.cer, 2)}</td>
+      <td>${num(draw.reward, 3)}</td>
+      <td>${esc(draw.hyp || "")}</td>
+    </tr>`).join("") || `<tr><td colspan="5" class="quiet">No review draws.</td></tr>`;
+
+  const shown = updates.slice(-40);
+  const updateNote = document.getElementById("update-note");
+  const older = updates.length - shown.length;
+  updateNote.textContent = (older > 0 ? `Showing the last ${shown.length} of ${updates.length} updates. ` : "")
+    + "Click a row to see each draw.";
+  document.getElementById("update-body").innerHTML = shown.map((row) => {
+    const open = String(state.expanded) === String(row.update);
+    const example = row.example
+      ? `${esc(row.example.text)} → <span class="hyp">${esc(row.example.hyp)}</span>`
+      : "";
+    const head = `
+      <tr class="click" data-update="${row.update}">
+        <td>${row.update}</td>
+        <td>${row.block ?? "—"}</td>
+        <td>${num(row.elapsed_min, 1)}</td>
+        <td>${num(row.reward_mean, 3)}</td>
+        <td>${num(row.cer_mean, 3)}</td>
+        <td>${num(row.kl, 4)}</td>
+        <td>${num(row.loss, 4)}</td>
+        <td>${num(row.grad, 3)}</td>
+        <td>${num(row.steps_mean, 0)}</td>
+        <td>${example}</td>
+      </tr>`;
+    if (!open) return head;
+    const detail = (row.draws || []).map((draw) => `
+      <div>${esc(draw.text || "")}
+        · ${num(draw.steps, 0)} steps
+        · reward ${num(draw.reward, 3)}
+        · cer ${num(draw.cer, 3)}
+        · wcer ${num(draw.wcer, 3)}
+        · adv ${num(draw.advantage, 3)}
+        · kl ${num(draw.kl, 4)}
+        · ${esc(draw.hyp || draw.skipped || "")}
+      </div>`).join("");
+    return head + `<tr class="detail"><td colspan="10">${detail || "No per-draw records."}</td></tr>`;
+  }).reverse().join("") || `<tr><td colspan="10" class="quiet">No updates yet.</td></tr>`;
+
+  const feed = rows.filter((row) => ["draw", "update", "review", "checkpoint", "skip", "stop"].includes(row.type));
+  document.getElementById("activity").innerHTML = feed.slice(-12).reverse().map((row) => {
+    if (row.type === "draw") {
+      return `<li>Drawing update ${row.update ?? "?"} · sample ${row.draw}/${row.k} · ${row.steps} steps · ${esc(row.text)}</li>`;
+    }
+    if (row.type === "update") {
+      return `<li>Update ${row.update} · reward ${num(row.reward_mean, 3)} · cer ${num(row.cer_mean, 3)} · wcer ${num(row.wcer_mean, 3)} · kl ${num(row.kl, 4)}</li>`;
+    }
+    if (row.type === "review") {
+      return `<li>Review ckpt ${String(row.block).padStart(4, "0")} · cer ${num(row.cer_mean, 3)} · reward ${num(row.reward_mean, 3)}${row.best ? " · new best" : ""}</li>`;
+    }
+    if (row.type === "checkpoint") {
+      return `<li>Saved checkpoint ${row.block} after update ${row.update}</li>`;
+    }
+    if (row.type === "skip") return `<li>Skipped a human round · ${esc(row.text || "")}</li>`;
+    return `<li>Stopped · ${esc(row.reason || "")} · update ${row.update ?? "—"}</li>`;
+  }).join("") || "<li>Waiting for the trainer.</li>";
+
+  requestAnimationFrame(() => drawCharts(rows));
+}
+
+document.getElementById("run").addEventListener("change", (event) => {
+  state.run = event.target.value;
+  state.block = null;
+  state.expanded = null;
+  state.token = "";
+  render();
+});
+
+document.getElementById("checkpoints").addEventListener("click", (event) => {
+  const button = event.target.closest("button[data-block]");
+  if (!button) return;
+  state.block = Number(button.dataset.block);
+  state.token = "";
+  render();
+});
+
+document.getElementById("update-body").addEventListener("click", (event) => {
+  const row = event.target.closest("tr[data-update]");
+  if (!row) return;
+  const update = row.dataset.update;
+  state.expanded = String(state.expanded) === update ? null : update;
+  state.token = "";
+  render();
+});
+
+window.addEventListener("resize", () => {
+  const { rows } = currentRows();
+  drawCharts(rows);
+});
+
+async function poll() {
+  try {
+    const response = await fetch("/api/events?offset=" + state.offset, { cache: "no-store" });
+    if (!response.ok) throw new Error(String(response.status));
+    const body = await response.json();
+    if (body.reset) {
+      state.events = [];
+      state.token = "";
+    }
+    if (body.events && body.events.length) state.events.push(...body.events);
+    state.offset = body.offset;
+    document.getElementById("error").textContent = "";
+    const { rows } = currentRows();
+    paintStatus(rows);
+    render();
+  } catch (err) {
+    document.getElementById("error").textContent = "The dashboard cannot reach its server.";
+  }
+}
+
+poll();
+setInterval(poll, 1000);
+</script>
+</body>
+</html>

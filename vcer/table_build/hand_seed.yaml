@@ -1,0 +1,50 @@
+# Hand-curated visual confusions. Lookup is directional: ref, hyp, cost.
+# A listed pair is an upper bound once render similarity is merged in.
+version: 1
+k: 2
+ins: 1.0
+del: 1.0
+min_sub_cost: 0.15
+min_indel_cost: 0.6
+case_cost: 0.2
+pairs:
+  - [rn, m, 0.25]
+  - [m, rn, 0.25]
+  - [cl, d, 0.30]
+  - [d, cl, 0.30]
+  - [d, ol, 0.25]
+  - [ol, d, 0.25]
+  - [vv, w, 0.30]
+  - [w, vv, 0.30]
+  - [u, v, 0.35]
+  - [v, u, 0.35]
+  - [a, o, 0.40]
+  - [o, a, 0.40]
+  - [n, u, 0.40]
+  - [u, n, 0.40]
+  - [h, b, 0.35]
+  - [b, h, 0.35]
+  - [l, 1, 0.30]
+  - [1, l, 0.30]
+  - [l, I, 0.30]
+  - [I, l, 0.30]
+  - [1, I, 0.30]
+  - [I, 1, 0.30]
+  - [0, O, 0.25]
+  - [O, 0, 0.25]
+  - [0, o, 0.25]
+  - [o, 0, 0.25]
+  - [5, S, 0.30]
+  - [S, 5, 0.30]
+  - [5, s, 0.30]
+  - [s, 5, 0.30]
+  - [2, Z, 0.35]
+  - [Z, 2, 0.35]
+  - [2, z, 0.35]
+  - [z, 2, 0.35]
+  - [g, 9, 0.30]
+  - [9, g, 0.30]
+  - [q, 9, 0.35]
+  - [9, q, 0.35]
+  - [e, c, 0.35]
+  - [c, e, 0.35]

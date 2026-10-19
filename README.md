@@ -80,7 +80,7 @@ Polish characters (ą, ę, ó, …) are automatically transliterated to ASCII. A
 |---|---|
 | Model | 3× LSTM, H=400, soft window K=10, MDN M=20 |
 | Training | IAM On-Line Handwriting DB, 80 epochs, batch 80 |
-| Checkpoint | `models/pre-trained.pth` (IAM-only), `models/post-trained.pth` (fine-tuned) |
+| Checkpoint | `models/best-4.pth` is the base model. Other `.pth` files are experiments. |
 | Serving | Pure numpy (no torch in production) |
 | Deployment | Google Cloud Run, `europe-central2`, scale-to-zero |
 | Image size | ~98 MB (vs ~334 MB with CPU torch) |
@@ -126,6 +126,36 @@ uv run export_weights.py
 # models/post-trained.pth → weights.npz + stoi.json
 ```
 
+`models/best-4.pth` is the base model used for evaluation and for the post-training stages below. Checkpoints written by `train.py` are experiments.
+
+### Post-training
+
+Both stages keep `models/best-4.pth` as a frozen KL anchor and never write that file. The update is sequence-level REINFORCE on the stroke log-probability: length-normalized, with a per-prompt baseline, and a KL penalty back toward the base model. `train_rl.py` starts from `models/rl-trocr.pth` when that file exists, and from the base model otherwise.
+
+**Recognizer reward.** TrOCR-Large reads a rendering of each sample. The default training signal is visually weighted CER (`docs/vcer.md`): a wrong glyph that looks like the right one costs less than a wrong glyph that does not. Plain CER is still logged, and it stays the metric for a held-out check.
+
+| `--reward` | value |
+|---|---|
+| `vcer` (default) | `0.8 * (1 - wCER) + 0.2 * exact`, in [0, 1] |
+| `exp` | `exp(-CER)`, in (0, 1] |
+| `linear` | `1 - CER` |
+| `soft` | `1` when CER is at or below `--tau` (default 0.1), then a straight fall to 0 at CER = 1 |
+
+Prompts default to `data/romeo_juliet.txt`, the whole play cut into short lines and sampled at random. `--prompts data/sentences.txt` is the IAM pool.
+
+**Human preference.** The model draws 3 samples of one prompt. You pick the best. That sample scores 1 and the other two score 0.
+
+```bash
+uv sync --extra rl          # transformers, for the recognizer stage
+uv run train_rl.py          # ~10 min of updates, then a checkpoint
+                            # models/rl-trocr.pth is the latest; re-run resumes it
+                            # samples/rl/ckpt-NNNN.png is 10 draws of one fixed sentence
+                            # --ckpt samples/rl/ckpt-0003.pth continues from that one
+uv run train_rlhf.py        # writes models/rl-human.pth, appends data/rlhf_prefs.jsonl
+```
+
+`train_rlhf.py` resumes from `models/rl-human.pth` if it exists, otherwise from `models/rl-trocr.pth`, otherwise from the base model. The KL anchor stays `models/best-4.pth`.
+
 ---
 
 ## Repo layout
@@ -134,15 +164,19 @@ uv run export_weights.py
 model.py              # PyTorch model (training)
 model_np.py           # numpy forward pass (serving)
 app_np.py             # Flask API (deployed)
-train.py              # training loop
+train.py              # supervised training loop
+train_rl.py           # post-train on a TrOCR-Large CER reward
+train_rlhf.py         # post-train on a human best-of-3 pick
+rl.py                 # CER reward, trajectory log-prob, REINFORCE
 generate.py           # sample from a checkpoint
 export_weights.py     # .pth → weights.npz for serving
 data.py               # dataset + dataloader
 Dockerfile            # slim numpy image, no torch
 
-models/               # checkpoints (gitignored, on Hugging Face)
-  pre-trained.pth     #   IAM-only baseline
-  post-trained.pth    #   fine-tuned on IAM + collected
+models/               # checkpoints (gitignored)
+  best-4.pth          #   base model, not overwritten by post-training
+  rl-trocr.pth        #   recognizer-reward RL
+  rl-human.pth        #   human best-of-3 RL
 
 scripts/              # dev / demo tools
   grid_samples.py     #   sample grid across texts + temps

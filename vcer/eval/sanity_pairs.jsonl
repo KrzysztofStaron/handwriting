@@ -1,0 +1,60 @@
+{"ref": "d", "hyp_a": "ol", "hyp_b": "e", "prefer": "a", "source": "proposed", "note": "'d' -> 'ol' should beat 'e'"}
+{"ref": "m", "hyp_a": "rn", "hyp_b": "n", "prefer": "a", "source": "proposed", "note": "'m' -> 'rn' should beat 'n'"}
+{"ref": "w", "hyp_a": "vv", "hyp_b": "x", "prefer": "a", "source": "proposed", "note": "'w' -> 'vv' should beat 'x'"}
+{"ref": "world", "hyp_a": "vvorld", "hyp_b": "xorld", "prefer": "a", "source": "proposed", "note": "'w' -> 'vv' should beat 'x'"}
+{"ref": "mad", "hyp_a": "rnad", "hyp_b": "xad", "prefer": "a", "source": "proposed", "note": "'m' -> 'rn' should beat 'x'"}
+{"ref": "dog", "hyp_a": "clog", "hyp_b": "eog", "prefer": "a", "source": "proposed", "note": "'d' -> 'cl' should beat 'e'"}
+{"ref": "red", "hyp_a": "reol", "hyp_b": "ree", "prefer": "a", "source": "proposed", "note": "'d' -> 'ol' should beat 'e'"}
+{"ref": "warm", "hyp_a": "vvarm", "hyp_b": "xarm", "prefer": "a", "source": "proposed", "note": "'w' -> 'vv' should beat 'x'"}
+{"ref": "moon", "hyp_a": "rnoon", "hyp_b": "xoon", "prefer": "a", "source": "proposed", "note": "'m' -> 'rn' should beat 'x'"}
+{"ref": "wide", "hyp_a": "vvide", "hyp_b": "xide", "prefer": "a", "source": "proposed", "note": "'w' -> 'vv' should beat 'x'"}
+{"ref": "made", "hyp_a": "rnade", "hyp_b": "xade", "prefer": "a", "source": "proposed", "note": "'m' -> 'rn' should beat 'x'"}
+{"ref": "wood", "hyp_a": "vvood", "hyp_b": "xood", "prefer": "a", "source": "proposed", "note": "'w' -> 'vv' should beat 'x'"}
+{"ref": "mind", "hyp_a": "rnind", "hyp_b": "xind", "prefer": "a", "source": "proposed", "note": "'m' -> 'rn' should beat 'x'"}
+{"ref": "dwell", "hyp_a": "clwell", "hyp_b": "xwell", "prefer": "a", "source": "proposed", "note": "'d' -> 'cl' should beat 'x'"}
+{"ref": "and", "hyp_a": "anol", "hyp_b": "ane", "prefer": "a", "source": "proposed", "note": "'d' -> 'ol' should beat 'e'"}
+{"ref": "hand", "hyp_a": "band", "hyp_b": "xand", "prefer": "a", "source": "proposed", "note": "'h' -> 'b' should beat 'x'"}
+{"ref": "love", "hyp_a": "loue", "hyp_b": "loxe", "prefer": "a", "source": "proposed", "note": "'v' -> 'u' should beat 'x'"}
+{"ref": "cat", "hyp_a": "cot", "hyp_b": "cxt", "prefer": "a", "source": "proposed", "note": "'a' -> 'o' should beat 'x'"}
+{"ref": "bet", "hyp_a": "het", "hyp_b": "xet", "prefer": "a", "source": "proposed", "note": "'b' -> 'h' should beat 'x'"}
+{"ref": "cost", "hyp_a": "cast", "hyp_b": "cxst", "prefer": "a", "source": "proposed", "note": "'o' -> 'a' should beat 'x'"}
+{"ref": "gel", "hyp_a": "9el", "hyp_b": "xel", "prefer": "a", "source": "proposed", "note": "'g' -> '9' should beat 'x'"}
+{"ref": "Oat", "hyp_a": "0at", "hyp_b": "xat", "prefer": "a", "source": "proposed", "note": "'O' -> '0' should beat 'x'"}
+{"ref": "Ice", "hyp_a": "lce", "hyp_b": "xce", "prefer": "a", "source": "proposed", "note": "'I' -> 'l' should beat 'x'"}
+{"ref": "hello", "hyp_a": "he1lo", "hyp_b": "hexlo", "prefer": "a", "source": "proposed", "note": "'l' -> '1' should beat 'x'"}
+{"ref": "Juliet", "hyp_a": "Ju1iet", "hyp_b": "Juxiet", "prefer": "a", "source": "proposed", "note": "'l' -> '1' should beat 'x'"}
+{"ref": "hello", "hyp_a": "hello", "hyp_b": "xxxxx", "prefer": "a", "source": "proposed", "note": "closer transcription should beat the garbled one"}
+{"ref": "hello", "hyp_a": "he11o", "hyp_b": "xxxxx", "prefer": "a", "source": "proposed", "note": "closer transcription should beat the garbled one"}
+{"ref": "Juliet", "hyp_a": "Juliet", "hyp_b": "xxxxxxx", "prefer": "a", "source": "proposed", "note": "closer transcription should beat the garbled one"}
+{"ref": "Juliet", "hyp_a": "Ju1iet", "hyp_b": "Jxxxxx", "prefer": "a", "source": "proposed", "note": "closer transcription should beat the garbled one"}
+{"ref": "Romeo", "hyp_a": "Romeo", "hyp_b": "xxxxx", "prefer": "a", "source": "proposed", "note": "closer transcription should beat the garbled one"}
+{"ref": "Romeo", "hyp_a": "R0meo", "hyp_b": "Rxxxx", "prefer": "a", "source": "proposed", "note": "closer transcription should beat the garbled one"}
+{"ref": "the old man", "hyp_a": "the old man", "hyp_b": "xxxxxxxxxxx", "prefer": "a", "source": "proposed", "note": "closer transcription should beat the garbled one"}
+{"ref": "the old man", "hyp_a": "the 0ld man", "hyp_b": "the xxx man", "prefer": "a", "source": "proposed", "note": "closer transcription should beat the garbled one"}
+{"ref": "Verona", "hyp_a": "Verona", "hyp_b": "xxxxxx", "prefer": "a", "source": "proposed", "note": "closer transcription should beat the garbled one"}
+{"ref": "Verona", "hyp_a": "Ver0na", "hyp_b": "Vxxxxx", "prefer": "a", "source": "proposed", "note": "closer transcription should beat the garbled one"}
+{"ref": "wherefore", "hyp_a": "wherefore", "hyp_b": "xxxxxxxxx", "prefer": "a", "source": "proposed", "note": "closer transcription should beat the garbled one"}
+{"ref": "wherefore", "hyp_a": "wheref0re", "hyp_b": "wxxxxxxxx", "prefer": "a", "source": "proposed", "note": "closer transcription should beat the garbled one"}
+{"ref": "banished", "hyp_a": "banished", "hyp_b": "xxxxxxxx", "prefer": "a", "source": "proposed", "note": "closer transcription should beat the garbled one"}
+{"ref": "morning", "hyp_a": "morning", "hyp_b": "xxxxxxx", "prefer": "a", "source": "proposed", "note": "closer transcription should beat the garbled one"}
+{"ref": "morning", "hyp_a": "m0rning", "hyp_b": "xxxxxxx", "prefer": "a", "source": "proposed", "note": "closer transcription should beat the garbled one"}
+{"ref": "Capulet", "hyp_a": "Capulet", "hyp_b": "xxxxxxx", "prefer": "a", "source": "proposed", "note": "closer transcription should beat the garbled one"}
+{"ref": "love", "hyp_a": "love", "hyp_b": "xxxx", "prefer": "a", "source": "proposed", "note": "closer transcription should beat the garbled one"}
+{"ref": "nurse", "hyp_a": "nurse", "hyp_b": "xxxxx", "prefer": "a", "source": "proposed", "note": "closer transcription should beat the garbled one"}
+{"ref": "sword", "hyp_a": "svvord", "hyp_b": "sxxxx", "prefer": "a", "source": "proposed", "note": "closer transcription should beat the garbled one"}
+{"ref": "death", "hyp_a": "death", "hyp_b": "xxxxx", "prefer": "a", "source": "proposed", "note": "closer transcription should beat the garbled one"}
+{"ref": "death", "hyp_a": "0eath", "hyp_b": "xxxxx", "prefer": "a", "source": "proposed", "note": "closer transcription should beat the garbled one"}
+{"ref": "poison", "hyp_a": "poison", "hyp_b": "xxxxxx", "prefer": "a", "source": "proposed", "note": "closer transcription should beat the garbled one"}
+{"ref": "friar", "hyp_a": "friar", "hyp_b": "xxxxx", "prefer": "a", "source": "proposed", "note": "closer transcription should beat the garbled one"}
+{"ref": "balcony", "hyp_a": "balcony", "hyp_b": "xxxxxxx", "prefer": "a", "source": "proposed", "note": "closer transcription should beat the garbled one"}
+{"ref": "Tybalt", "hyp_a": "Tybalt", "hyp_b": "xxxxxx", "prefer": "a", "source": "proposed", "note": "closer transcription should beat the garbled one"}
+{"ref": "Mercutio", "hyp_a": "Mercutio", "hyp_b": "xxxxxxxx", "prefer": "a", "source": "proposed", "note": "closer transcription should beat the garbled one"}
+{"ref": "Mantua", "hyp_a": "Mantua", "hyp_b": "xxxxxx", "prefer": "a", "source": "proposed", "note": "closer transcription should beat the garbled one"}
+{"ref": "gold", "hyp_a": "g0ld", "hyp_b": "xxxx", "prefer": "a", "source": "proposed", "note": "closer transcription should beat the garbled one"}
+{"ref": "lady", "hyp_a": "1ady", "hyp_b": "xxxx", "prefer": "a", "source": "proposed", "note": "closer transcription should beat the garbled one"}
+{"ref": "come", "hyp_a": "c0me", "hyp_b": "xxxx", "prefer": "a", "source": "proposed", "note": "closer transcription should beat the garbled one"}
+{"ref": "night", "hyp_a": "niqht", "hyp_b": "nxxxx", "prefer": "a", "source": "proposed", "note": "closer transcription should beat the garbled one"}
+{"ref": "soft", "hyp_a": "s0ft", "hyp_b": "xxxx", "prefer": "a", "source": "proposed", "note": "closer transcription should beat the garbled one"}
+{"ref": "parting", "hyp_a": "parting", "hyp_b": "xxxxxxx", "prefer": "a", "source": "proposed", "note": "closer transcription should beat the garbled one"}
+{"ref": "sorrow", "hyp_a": "sorrow", "hyp_b": "xxxxxx", "prefer": "a", "source": "proposed", "note": "closer transcription should beat the garbled one"}
+{"ref": "exile", "hyp_a": "exi1e", "hyp_b": "exxxx", "prefer": "a", "source": "proposed", "note": "closer transcription should beat the garbled one"}
