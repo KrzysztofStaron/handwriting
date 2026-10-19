@@ -153,6 +153,19 @@ def string_reward(reference, hypothesis, alpha=0.8):
     return value, reward
 
 
+def blend_string_reward(cer_value, wcer_value, exact, alpha=0.8):
+    """Plain CER and visual CER, each half of the error, plus an exact match.
+
+    `alpha * (1 - min(0.5 * CER + 0.5 * wCER, 1)) + (1 - alpha) * exact`.
+    Each distance is capped at 1 before the average, so a long hypothesis
+    cannot push the score below the exact-match term. An exact match is 1.
+    """
+    cer_c = min(max(float(cer_value), 0.0), 1.0)
+    wcer_c = min(max(float(wcer_value), 0.0), 1.0)
+    distance = 0.5 * cer_c + 0.5 * wcer_c
+    return alpha * (1.0 - distance) + (1.0 - alpha) * float(exact)
+
+
 def reward_from_cer(value, kind="exp", tau=0.1):
     """Map a (possibly capped) CER to a scalar reward.
 
@@ -1126,8 +1139,7 @@ class TrocrScorer:
         }
         self._vcer = None
         self.vcer_config = None
-        # Phase 6 integration point: vCER is a second reward on the decoded string.
-        if kind == "vcer":
+        if kind in ("vcer", "both"):
             from vcer.reward import VcerReward
             self._vcer = VcerReward.load(vcer_table, k=vcer_k, alpha=vcer_alpha)
             self.vcer_config = self._vcer.config
@@ -1202,6 +1214,15 @@ class TrocrScorer:
             self.last_details = None
             return self._with_confidence(rewards, cers), cers, hyps
         vcer = getattr(self, "_vcer", None)
+        if self.kind == "both":
+            _pure, details = vcer.score_batch(references, hyps)
+            self.last_details = details
+            rewards = [
+                blend_string_reward(item["cer"], item["wcer"], item["exact"], vcer.alpha)
+                for item in details
+            ]
+            cers = [item["cer"] for item in details]
+            return self._with_confidence(rewards, cers, details), cers, hyps
         if vcer is not None:
             rewards, details = vcer.score_batch(references, hyps)
             self.last_details = details

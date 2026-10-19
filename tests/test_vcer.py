@@ -229,10 +229,20 @@ class PromptAndTrainerTests(unittest.TestCase):
             self.assertLessEqual(len(line), 48)
             self.assertTrue(set(line) <= alphabet)
 
-    def test_recognizer_defaults_to_vcer_and_the_play(self):
+    def test_recognizer_defaults_to_plain_and_visual_cer(self):
         import train_rl
+        from rl import blend_string_reward
+        from vcer.reward import VcerReward
         args = train_rl.parse_args([])
-        self.assertEqual(args.reward, "vcer")
+        self.assertEqual(args.reward, "both")
+        pure, diag = VcerReward.load().score_pair("d", "ol")
+        mixed = blend_string_reward(diag["cer"], diag["wcer"], diag["exact"])
+        self.assertGreater(mixed, 0.0)
+        self.assertLess(mixed, pure)
+        self.assertAlmostEqual(
+            mixed,
+            0.8 * (1.0 - 0.5 * min(diag["cer"], 1.0) - 0.5 * min(diag["wcer"], 1.0)),
+        )
         self.assertEqual(args.prompts, "data/romeo_juliet.txt")
         self.assertEqual(args.max_chars, 48)
         self.assertAlmostEqual(args.vcer_alpha, 0.8)

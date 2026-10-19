@@ -74,7 +74,7 @@ _CKPT_NAME = re.compile(r"^ckpt-(\d+)\.pth$")
 
 def parse_args(argv=None):
     parser = argparse.ArgumentParser(
-        description="REINFORCE the handwriting model against a TrOCR-Large vCER reward. "
+        description="REINFORCE the handwriting model against a TrOCR-Large reward. "
                     "A checkpoint and a 10-sample review sheet are written about every "
                     "10 minutes. Re-running resumes from the latest checkpoint. "
                     f"The base model is {BASE_CKPT} and is not modified.",
@@ -100,9 +100,10 @@ def parse_args(argv=None):
     parser.add_argument("--dict", default="/usr/share/dict/words",
                         help="Word list for --words. One word per line. "
                              "Capitals, digits, and punctuation are dropped.")
-    parser.add_argument("--reward", choices=("vcer", "cer", "exp", "linear", "soft"), default="vcer",
-                        help="vcer: visual distance, 0.8*(1-min(wCER,1))+0.2*exact (default). "
-                             "cer: the same shape with plain CER. "
+    parser.add_argument("--reward", choices=("both", "vcer", "cer", "exp", "linear", "soft"), default="both",
+                        help="both: half plain CER and half visual CER (default), "
+                             "0.8*(1 - 0.5*CER - 0.5*wCER)+0.2*exact. "
+                             "vcer: visual distance only. cer: plain CER only. "
                              "exp: exp(-CER). linear: 1-CER. "
                              "soft: 1 at or below --tau, then linear to 0 at CER=1.")
     parser.add_argument("--vcer-alpha", type=float, default=0.8,
@@ -612,9 +613,9 @@ def main():
         raise SystemExit("--block-minutes must be > 0")
     if args.reward == "soft" and not 0.0 < args.tau < 1.0:
         raise SystemExit("--tau must be between 0 and 1")
-    if args.reward == "vcer" and not 0.0 <= args.vcer_alpha <= 1.0:
+    if args.reward in ("vcer", "both") and not 0.0 <= args.vcer_alpha <= 1.0:
         raise SystemExit("--vcer-alpha must be between 0 and 1")
-    if args.reward == "vcer" and args.vcer_k not in (1, 2, 3):
+    if args.reward in ("vcer", "both") and args.vcer_k not in (1, 2, 3):
         raise SystemExit("--vcer-k must be 1, 2, or 3")
     if not 0.0 <= args.confidence <= 1.0:
         raise SystemExit("--confidence must be between 0 and 1")
@@ -697,7 +698,8 @@ def main():
         )
         if scorer.vcer_config:
             cfg = scorer.vcer_config
-            print(f"vCER alpha {cfg['alpha']}  k {cfg['k']}  table {cfg['hash']}  "
+            share = "half plain CER, half vCER  " if args.reward == "both" else "vCER  "
+            print(f"{share}alpha {cfg['alpha']}  k {cfg['k']}  table {cfg['hash']}  "
                   f"confidence {args.confidence:g}  straightness {args.straightness:g}  "
                   f"prompts {args.prompts}", flush=True)
         else:
