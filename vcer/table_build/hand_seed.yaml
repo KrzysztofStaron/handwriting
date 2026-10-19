@@ -1,5 +1,6 @@
 # Hand-curated visual confusions. Lookup is directional: ref, hyp, cost.
-# A listed pair is an upper bound once render similarity is merged in.
+# A listed one-character pair is an upper bound once ink overlap is merged in.
+# Two-letter pairs stay at the listed cost. Do not add new ones.
 version: 1
 k: 2
 ins: 1.0

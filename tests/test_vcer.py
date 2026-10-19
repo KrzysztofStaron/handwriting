@@ -10,7 +10,8 @@ from vcer.eval.validate import agreement, load_sanity, proposed_pairs
 from vcer.inspect import explain_pair, rule_report
 from vcer.reward import pair_reward, prepare, rewards
 from vcer.table_build.from_confusions import harvest, merge_edits, levenshtein_ops
-from vcer.table_build.from_render import render_similarity, rescale_costs
+from vcer.table_build.build import build_table, combine_overlap
+from vcer.table_build.from_render import iou_costs, overlap_costs, render_similarity, rescale_costs
 from vcer.table_build.hand_seed import load_hand_seed
 from vcer.table_build.merge import merge_costs
 
@@ -139,6 +140,61 @@ class BuildTests(unittest.TestCase):
         self.assertEqual(first, second)
         self.assertNotIn(("a", "a"), first)
 
+    def test_overlap_is_the_unmatched_share_of_the_ink(self):
+        import numpy as np
+        block = np.zeros((8, 8), dtype=np.float32)
+        block[3:5, 3:5] = 1
+        shifted = np.zeros((8, 8), dtype=np.float32)
+        shifted[4:6, 3:5] = 1
+        far = np.zeros((8, 8), dtype=np.float32)
+        far[0:1, 7:8] = 1
+        blank = np.zeros((8, 8), dtype=np.float32)
+        chipped = block.copy()
+        chipped[3, 3] = 0
+        costs = overlap_costs(
+            ["a", "o", "x", " ", "ol"],
+            masks={"a": block, "o": shifted, "x": far, " ": blank, "ol": block},
+            shift=1,
+        )
+        self.assertNotIn(("a", "a"), costs)
+        self.assertNotIn(("a", "ol"), costs)
+        self.assertNotIn(("ol", "a"), costs)
+        for src, dst in costs:
+            self.assertEqual(len(src), 1)
+            self.assertEqual(len(dst), 1)
+        self.assertAlmostEqual(costs[("a", "o")], 0.0)
+        self.assertAlmostEqual(costs[("o", "a")], costs[("a", "o")])
+        self.assertAlmostEqual(costs[("a", "x")], 1.0)
+        self.assertAlmostEqual(costs[("a", " ")], 1.0)
+        self.assertAlmostEqual(costs[(" ", "a")], 1.0)
+        partial = iou_costs({"a": block, "b": chipped}, shift=0)
+        self.assertAlmostEqual(partial[("a", "b")], 0.25)
+
+    def test_combine_keeps_hand_digraphs_and_drops_new_ones(self):
+        hand = {("d", "ol"): 0.25, ("a", "o"): 0.40, ("o", "a"): 0.40, ("rn", "m"): 0.25}
+        overlap = {
+            ("a", "o"): 0.10,
+            ("o", "a"): 0.10,
+            ("a", "x"): 0.80,
+            ("x", "a"): 0.80,
+            ("d", "ol"): 0.05,
+            ("ol", "x"): 0.05,
+            ("cl", "d"): 0.05,
+        }
+        merged = combine_overlap(hand, overlap)
+        self.assertAlmostEqual(merged[("a", "o")], 0.10)
+        self.assertAlmostEqual(merged[("o", "a")], 0.10)
+        self.assertAlmostEqual(merged[("a", "x")], 0.80)
+        self.assertAlmostEqual(merged[("d", "ol")], 0.25)
+        self.assertAlmostEqual(merged[("rn", "m")], 0.25)
+        self.assertNotIn(("ol", "x"), merged)
+        self.assertNotIn(("cl", "d"), merged)
+        table = build_table(["a", "o", "x", "d"], hand=hand, overlap=overlap)
+        self.assertAlmostEqual(table.sub_cost("a", "o"), 0.15)
+        self.assertAlmostEqual(table.sub_cost("d", "ol"), 0.25)
+        self.assertNotIn(("ol", "x"), table.sub)
+        self.assertIn("ink-overlap", table.source)
+
     def test_merge_bounds(self):
         hand = {("d", "ol"): 0.25}
         render = {("d", "ol"): 0.9, ("d", "e"): 0.1, ("a", "a"): 0.2}
@@ -183,18 +239,20 @@ class RewardTests(unittest.TestCase):
         self.assertLess(apart, 1.0)
         self.assertGreater(apart_diag["cer"], 0.0)
 
-    def test_rule_report_separates_the_hand_list_from_the_font_floor(self):
+    def test_rule_report_prices_symbols_by_ink(self):
         report = rule_report()
         self.assertEqual(report["counts"]["hand"] + report["counts"]["hand_render"], 40)
-        self.assertGreater(report["counts"]["floor"], 1000)
+        self.assertEqual(report["hand_missing"], [])
+        self.assertEqual(report["counts"]["floor"], 0)
+        self.assertIn("ink-overlap", report["source"])
         pulled = [item for item in report["rules"] if item["ref"] == "5" and item["hyp"] == "S"]
-        self.assertEqual(pulled[0]["origin"], "hand+render")
-        self.assertAlmostEqual(pulled[0]["cost"], 0.15)
+        self.assertIn(pulled[0]["origin"], ("hand", "hand+render"))
+        self.assertLessEqual(pulled[0]["cost"], 0.30)
         self.assertAlmostEqual(pulled[0]["seed"], 0.30)
-        floor = [item for item in report["rules"] if item["ref"] == "!" and item["hyp"] == "("]
-        self.assertEqual(floor[0]["origin"], "floor")
-        self.assertAlmostEqual(floor[0]["cost"], 0.55)
-        self.assertTrue(floor[0]["cheaper_than_delete"])
+        bang = [item for item in report["rules"] if item["ref"] == "!" and item["hyp"] == "("]
+        if bang:
+            self.assertEqual(bang[0]["origin"], "render")
+            self.assertGreater(bang[0]["cost"], 0.15)
 
     def test_explain_names_the_rule_behind_an_edit(self):
         looked = explain_pair("d", "ol")
@@ -337,6 +395,26 @@ class TableAndSuiteTests(unittest.TestCase):
         for cost in table.sub.values():
             self.assertGreaterEqual(cost, table.min_sub_cost)
             self.assertLessEqual(cost, 1.0)
+        digraphs = {
+            ("rn", "m"), ("m", "rn"),
+            ("cl", "d"), ("d", "cl"),
+            ("d", "ol"), ("ol", "d"),
+            ("vv", "w"), ("w", "vv"),
+        }
+        multi = {pair for pair in table.sub if len(pair[0]) != 1 or len(pair[1]) != 1}
+        self.assertEqual(multi, digraphs)
+        import json
+        from pathlib import Path
+        alphabet = list(json.loads(
+            (Path(__file__).resolve().parents[1] / "stoi.json").read_text(encoding="utf-8")))
+        self.assertEqual(len(alphabet), 77)
+        for src in alphabet:
+            for dst in alphabet:
+                if src == dst:
+                    continue
+                self.assertIn((src, dst), table.sub)
+        self.assertAlmostEqual(table.sub[("a", "x")], table.sub[("x", "a")])
+        self.assertGreater(table.sub[("a", "x")], table.sub[("c", "e")])
 
     def test_proposed_orderings_beat_plain_cer(self):
         stats = agreement(self.table, load_sanity())

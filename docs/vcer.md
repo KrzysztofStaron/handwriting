@@ -23,7 +23,9 @@ Substitution spans are 1..K characters, K defaults to 2 and can be 1, 2, or 3. I
 
 `vcer/table.json` is the table training loads. It has a version and a sha256 prefix. The loader rejects a mismatched hash. The rule page at [http://127.0.0.1:8765/vcer](http://127.0.0.1:8765/vcer) lists every discounted pair and scores a prompt against a read.
 
-It is the hand list in `vcer/table_build/hand_seed.yaml` merged with glyph images from Bradley Hand and Marker Felt (a pixel stamp is the fallback). A hand-seed pair is an upper bound. A pair that only the renderer produced cannot cost less than 0.55.
+Each symbol is drawn once in Bradley Hand, Marker Felt, and Noteworthy, at the same size on a shared baseline. A pixel stamp is the fallback when those fonts do not load. The cost against another symbol is the fraction of ink that does not overlap, after trying a shift of a few pixels, averaged over the fonts that actually drew both marks. A period stays a dot. Glyphs are not stretched to the same height. A blank mark, including space, costs 1 against every symbol.
+
+The hand list in `vcer/table_build/hand_seed.yaml` is an upper bound on the one-character pairs it names: the stored cost is the cheaper of the ink overlap and the listed cost. The two-letter pairs are only the ones in that list (`rn`/`m`, `cl`/`d`, `d`/`ol`, `vv`/`w`, both ways). No other two-letter substitution is added.
 
 Confusion counts from a baseline TrOCR pass are implemented in `vcer.table_build.from_confusions` and were not run. The recognizer trainer already has TrOCR loaded. A later harvest has to use a held-out split, not the RL prompts.
 

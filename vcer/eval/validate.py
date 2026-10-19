@@ -166,7 +166,7 @@ def sweep(table):
     lines.append("")
     lines.append("## Substitution floor")
     lines.append("")
-    lines.append("Stored hand costs are lifted when the floor rises. Render-only pairs are already at least 0.55.")
+    lines.append("Stored costs are lifted when the substitution floor rises. One-character costs are the unmatched share of the ink.")
     lines.append("")
     lines.append("| floor | d→ol | d→e | trailing dot | one wrong letter | all i |")
     lines.append("|---|---|---|---|---|---|")

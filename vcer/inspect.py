@@ -1,9 +1,9 @@
 """What the loaded vCER table actually charges, and why.
 
-The training table mixes a short hand list with font-overlap costs. A pair
-the renderer invented cannot go below the render floor. This module labels
-each discounted pair and explains one alignment, so a rule can be checked
-without reading the JSON.
+The training table prices every symbol by how much ink it shares with every
+other symbol. A hand-listed pair can only make that cheaper. Two-letter pairs
+are only the hand list. This module labels each discounted pair and explains
+one alignment, so a rule can be checked without reading the JSON.
 """
 
 from pathlib import Path
@@ -26,8 +26,6 @@ def _origin(src, dst, cost, hand):
         return "hand", float(seed)
     if cost >= 1.0 - 1e-9:
         return "full", None
-    if abs(cost - RENDER_ONLY_FLOOR) <= 1e-6:
-        return "floor", None
     return "render", None
 
 
@@ -87,12 +85,12 @@ def _why(op, table, hand):
     if listed is not None and abs(listed - op["cost"]) <= 1e-6:
         origin, seed = _origin(src, dst, listed, hand)
         if origin == "hand+render":
-            return f"hand list said {seed:.2f}, font overlap pulled it to {listed:.2f}", origin
+            return f"hand list said {seed:.2f}, ink overlap pulled it to {listed:.2f}", origin
         if origin == "hand":
             return "hand list", origin
         if origin == "floor":
-            return f"font overlap, held at the {RENDER_ONLY_FLOOR:.2f} floor", origin
-        return "font overlap", origin
+            return f"ink overlap, held at the {RENDER_ONLY_FLOOR:.2f} floor", origin
+        return "ink overlap", origin
     if src.casefold() == dst.casefold() and abs(op["cost"] - table.case_cost) <= 1e-6:
         return "same letters, different case, no listed pair", "case"
     return "no listed pair, full substitution", "default"

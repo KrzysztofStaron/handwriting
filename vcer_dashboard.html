@@ -92,8 +92,7 @@
   <div class="bar">
     <select id="origin">
       <option value="hand">Hand list</option>
-      <option value="floor">Font floor</option>
-      <option value="render">Other font overlap</option>
+      <option value="render">Ink overlap</option>
       <option value="under">Cheaper than a deletion</option>
       <option value="all">Every discount</option>
     </select>
@@ -121,10 +120,10 @@ function money(value) {
 function originLabel(rule) {
   if (rule.origin === "hand") return "hand list";
   if (rule.origin === "hand+render") {
-    return "hand list was " + money(rule.seed) + ", font overlap made it " + money(rule.cost);
+    return "hand list was " + money(rule.seed) + ", ink overlap made it " + money(rule.cost);
   }
-  if (rule.origin === "floor") return "font overlap, held at the floor";
-  return "font overlap";
+  if (rule.origin === "floor") return "ink overlap, held at the floor";
+  return "ink overlap";
 }
 
 function matches(rule) {
@@ -166,14 +165,17 @@ function paintRules() {
 function paintSummary(meta) {
   const c = meta.counts;
   document.getElementById("summary").textContent =
-    c.hand + " hand pairs, " + c.hand_render + " of them made cheaper by the fonts. "
-    + c.floor + " pairs sit on the font floor. " + c.render + " more are a graded font overlap. "
+    c.hand + " hand pairs kept at the listed cost, "
+    + c.hand_render + " hand pairs the ink overlap made cheaper, and "
+    + c.render + " other symbol pairs priced by shared ink. "
     + c.full + " stored pairs cost 1 and change nothing.";
   document.getElementById("floors").textContent =
     "An insertion or a deletion costs " + money(meta.ins) + ", whatever the character is. "
     + "An unlisted substitution costs 1. A case change with no listed pair costs " + money(meta.case_cost) + ". "
     + "No substitution goes below " + money(meta.min_sub_cost) + ". "
-    + "A pair that only the fonts produced cannot go below " + money(meta.render_floor) + ". "
+    + "A one-character cost is the fraction of ink that does not overlap. "
+    + "A hand-listed pair can only make that cheaper. "
+    + "Two-letter pairs are only the hand list. "
     + "Spans are at most " + meta.k + " characters. "
     + "The reward is " + meta.alpha + " × (1 − wCER) + " + (1 - meta.alpha).toFixed(1) + " × exact. "
     + "Table " + meta.hash + ".";

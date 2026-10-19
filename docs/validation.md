@@ -17,13 +17,13 @@ Every degenerate string has to land strictly below that.
 | case | reward | wCER | below bar |
 |---|---|---|---|
 | thin_spam | 0.000 | 2.255 | yes |
-| only_i | 0.396 | 0.505 | yes |
+| only_i | 0.402 | 0.497 | yes |
 | repeat_i | 0.276 | 0.655 | yes |
-| very_short | 0.335 | 0.582 | yes |
+| very_short | 0.338 | 0.577 | yes |
 | very_long | 0.000 | 4.127 | yes |
-| neutral_dots | 0.364 | 0.545 | yes |
-| quotes | 0.364 | 0.545 | yes |
-| dropped_word | 0.629 | 0.214 | yes |
+| neutral_dots | 0.372 | 0.534 | yes |
+| quotes | 0.375 | 0.531 | yes |
+| dropped_word | 0.625 | 0.218 | yes |
 | empty | 0.320 | 0.600 | yes |
 
 The hacking suite passed.
