@@ -140,6 +140,19 @@ def cer(reference, hypothesis):
     return levenshtein(ref, hyp) / len(ref)
 
 
+def string_reward(reference, hypothesis, alpha=0.8):
+    """Plain CER plus an exact-match bonus.
+
+    `0.8 * (1 - min(CER, 1)) + 0.2 * exact`. A lookalike mistake costs the
+    same as any other edit. CER can exceed 1; the bonus uses the capped value.
+    """
+    value = cer(reference, hypothesis)
+    exact = normalize_text(reference) == normalize_text(hypothesis)
+    capped = min(max(value, 0.0), 1.0)
+    reward = alpha * (1.0 - capped) + (1.0 - alpha) * float(exact)
+    return value, reward
+
+
 def reward_from_cer(value, kind="exp", tau=0.1):
     """Map a (possibly capped) CER to a scalar reward.
 
@@ -924,6 +937,14 @@ class TrocrScorer:
     def score(self, images, references):
         self.last_confidence = None
         hyps = self.read(images, max_new_tokens=self._decode_limit(references))
+        if self.kind == "cer":
+            cers, rewards = [], []
+            for ref, hyp in zip(references, hyps):
+                raw, reward = string_reward(ref, hyp)
+                cers.append(raw)
+                rewards.append(reward)
+            self.last_details = None
+            return self._with_confidence(rewards, cers), cers, hyps
         vcer = getattr(self, "_vcer", None)
         if vcer is not None:
             rewards, details = vcer.score_batch(references, hyps)

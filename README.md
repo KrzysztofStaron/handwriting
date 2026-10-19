@@ -132,11 +132,12 @@ uv run export_weights.py
 
 Both stages keep `models/best-4.pth` as a frozen KL anchor and never write that file. The update is sequence-level REINFORCE on the stroke log-probability: length-normalized, with a per-prompt baseline, and a KL penalty back toward the base model. `train_rl.py` starts from `models/rl-trocr.pth` when that file exists, and from the base model otherwise.
 
-**Recognizer reward.** TrOCR-Large reads a rendering of each sample. The default training signal is visually weighted CER (`docs/vcer.md`): a wrong glyph that looks like the right one costs less than a wrong glyph that does not. Plain CER is still logged, and it stays the metric for a held-out check.
+**Recognizer reward.** TrOCR-Large reads a rendering of each sample. The default score is plain CER plus an exact-match bonus. A lookalike mistake costs the same as any other edit. `--reward vcer` is the older visual distance (`docs/vcer.md`).
 
 | `--reward` | value |
 |---|---|
-| `vcer` (default) | `0.8 * (1 - wCER) + 0.2 * exact`, then mixed with TrOCR confidence (`--confidence`, default 0.2). High confidence helps a close read and hurts a wrong one. |
+| `cer` (default) | `0.8 * (1 - min(CER, 1)) + 0.2 * exact`, then mixed with TrOCR confidence (`--confidence`, default 0.2). High confidence helps a close read and hurts a wrong one. |
+| `vcer` | The same shape, with a visual edit distance in place of CER. |
 | `exp` | `exp(-CER)`, in (0, 1] |
 | `linear` | `1 - CER` |
 | `soft` | `1` when CER is at or below `--tau` (default 0.1), then a straight fall to 0 at CER = 1 |

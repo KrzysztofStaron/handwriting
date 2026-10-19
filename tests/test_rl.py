@@ -98,6 +98,18 @@ class RewardTests(unittest.TestCase):
         self.assertEqual(cer("a  b", "a b"), 0.0)
         self.assertEqual(cer('say "hi"', "say \u201chi\u201d"), 0.0)
 
+    def test_string_reward_charges_a_lookalike_the_full_edit(self):
+        from rl import string_reward
+        value, reward = string_reward("d", "ol")
+        self.assertEqual(value, 2.0)
+        self.assertAlmostEqual(reward, 0.0)
+        same, perfect = string_reward("hello: world", "hello : world")
+        self.assertEqual(same, 0.0)
+        self.assertAlmostEqual(perfect, 1.0)
+        slipped, partial = string_reward("cat", "cats")
+        self.assertAlmostEqual(slipped, 1.0 / 3.0)
+        self.assertAlmostEqual(partial, 0.8 * (1.0 - 1.0 / 3.0))
+
     def test_cer_ignores_a_space_before_punctuation(self):
         self.assertEqual(cer("hello: world", "hello : world"), 0.0)
         self.assertEqual(cer("end.", "end ."), 0.0)

@@ -35,11 +35,11 @@ uv run python -m vcer.table_build.build
 
 ## Trainer
 
-`train_rl.py --reward vcer` is the default. `--reward exp` is the previous `exp(-CER)` signal.
+`train_rl.py` defaults to `--reward cer`, which is plain CER and does not load this table. `--reward vcer` is the opt-in. `--reward exp` is `exp(-CER)`.
 
 | flag | default | meaning |
 |---|---|---|
-| `--reward` | `vcer` | `vcer`, `exp`, `linear`, or `soft` |
+| `--reward` | `cer` | `cer`, `vcer`, `exp`, `linear`, or `soft` |
 | `--vcer-alpha` | `0.8` | weight on `1 - wCER`; the rest is the exact-match bit |
 | `--vcer-k` | `2` | longest substitution span |
 | `--vcer-table` | `vcer/table.json` | versioned cost table |

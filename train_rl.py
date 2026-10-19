@@ -69,10 +69,11 @@ def parse_args(argv=None):
     parser.add_argument("--batch", type=int, default=4, help="Prompts per update.")
     parser.add_argument("-k", type=int, default=8,
                         help="Draws per prompt. The baseline is that prompt's mean reward.")
-    # Phase 6 integration point. vCER is the training default; exp/linear/soft stay available.
-    parser.add_argument("--reward", choices=("vcer", "exp", "linear", "soft"), default="vcer",
-                        help="vcer: visually weighted CER (default). exp: exp(-CER). "
-                             "linear: 1-CER. soft: 1 at or below --tau, then linear to 0 at CER=1.")
+    parser.add_argument("--reward", choices=("cer", "vcer", "exp", "linear", "soft"), default="cer",
+                        help="cer: 0.8*(1-min(CER,1))+0.2*exact (default). "
+                             "vcer: the same shape with a visual edit distance. "
+                             "exp: exp(-CER). linear: 1-CER. "
+                             "soft: 1 at or below --tau, then linear to 0 at CER=1.")
     parser.add_argument("--vcer-alpha", type=float, default=0.8,
                         help="Weight on (1 - wCER). The rest is an exact-match bonus.")
     parser.add_argument("--vcer-k", type=int, default=2,
@@ -515,6 +516,9 @@ def main():
             print(f"vCER alpha {cfg['alpha']}  k {cfg['k']}  table {cfg['hash']}  "
                   f"confidence {args.confidence:g}  straightness {args.straightness:g}  "
                   f"prompts {args.prompts}", flush=True)
+        else:
+            print(f"reward {args.reward}  confidence {args.confidence:g}  "
+                  f"straightness {args.straightness:g}  prompts {args.prompts}", flush=True)
         optimizer = torch.optim.Adam(model.parameters(), lr=args.lr)
         sidecar = load_sidecar(sidecar_for(ckpt, out_dir))
         ema = None
