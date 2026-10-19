@@ -36,7 +36,7 @@
   h1 { font-size: 22px; font-weight: 650; margin: 0; letter-spacing: -0.02em; }
   h2 { font-size: 15px; margin: 0 0 8px; }
   .sample-prompt { margin: 16px 0 6px; font-weight: 650; color: var(--ink); }
-  .sub, .note, figcaption, .quiet { color: var(--muted); }
+  .sub, .note, .quiet { color: var(--muted); }
   .sub { margin: 4px 0 0; min-height: 1.2em; }
   .note {
     margin: 8px 0 0;
@@ -77,7 +77,28 @@
     border-radius: 10px;
     padding: 8px 10px 10px;
   }
-  figcaption { font-size: 13px; font-weight: 650; color: var(--ink); margin-bottom: 4px; }
+  figcaption {
+    display: flex;
+    align-items: baseline;
+    gap: 8px;
+    margin: 0 0 6px;
+    font-size: 13px;
+    font-weight: 650;
+    color: var(--ink);
+  }
+  figcaption .until { font-variant-numeric: tabular-nums; }
+  .badge {
+    margin-left: auto;
+    flex: none;
+    font-size: 11px;
+    font-weight: 650;
+    line-height: 1.4;
+    color: #2456a3;
+    background: #e7eef8;
+    border-radius: 999px;
+    padding: 1px 7px;
+    font-variant-numeric: tabular-nums;
+  }
   canvas { width: 100%; height: 180px; display: block; }
   section.panel {
     margin-top: 14px;
@@ -139,19 +160,19 @@
   <p id="note" class="note" hidden></p>
   <section class="charts">
     <figure>
-      <figcaption>Reward</figcaption>
+      <figcaption>Reward <span id="eta-reward" class="until"></span><span id="badge-reward" class="badge"></span></figcaption>
       <canvas id="chart-reward"></canvas>
     </figure>
     <figure>
-      <figcaption>CER</figcaption>
+      <figcaption>CER <span id="eta-cer" class="until"></span><span id="badge-cer" class="badge"></span></figcaption>
       <canvas id="chart-cer"></canvas>
     </figure>
     <figure>
-      <figcaption>KL</figcaption>
+      <figcaption>KL <span id="badge-kl" class="badge"></span></figcaption>
       <canvas id="chart-kl"></canvas>
     </figure>
     <figure>
-      <figcaption>Steps</figcaption>
+      <figcaption>Steps <span id="badge-steps" class="badge"></span></figcaption>
       <canvas id="chart-steps"></canvas>
     </figure>
   </section>
@@ -311,18 +332,15 @@ function trendText(slope) {
   return (per > 0 ? "+" : "") + per.toFixed(digits) + " / 100 updates";
 }
 
-function formatDuration(seconds) {
-  if (seconds < 90 * 60) return Math.max(1, Math.round(seconds / 60)) + "m";
-  const hours = seconds / 3600;
-  if (hours < 48) {
-    const shown = hours < 10 ? Math.round(hours * 10) / 10 : Math.round(hours);
-    return String(shown).replace(/\.0$/, "") + "h";
-  }
-  return Math.round(seconds / 86400) + "d";
+function formatClock(seconds) {
+  const total = Math.max(0, Math.round(seconds / 60));
+  const hours = Math.floor(total / 60);
+  const minutes = total % 60;
+  return hours + "h " + minutes + "m";
 }
 
-function etaText(points, fit, target) {
-  if (!fit || !points.length) return "";
+function etaState(points, fit, target) {
+  if (!fit || !points.length) return null;
   let first = null;
   let last = null;
   for (const point of points) {
@@ -330,15 +348,51 @@ function etaText(points, fit, target) {
     if (!first || point.x < first.x) first = point;
     if (!last || point.x > last.x) last = point;
   }
-  if (!first || !last || last.x === first.x || last.t <= first.t) return "";
+  if (!first || !last || last.x === first.x || last.t <= first.t) return null;
   const yNow = fit.intercept + fit.slope * fit.xb;
   const gap = target - yNow;
-  if (Math.abs(gap) < 1e-4) return "at perfection";
-  if (gap * fit.slope <= 0) return "moving away";
+  if (Math.abs(gap) < 1e-4) return { kind: "text", label: "at perfection" };
+  if (gap * fit.slope <= 0) return { kind: "text", label: "moving away" };
   const seconds = (gap / fit.slope) * (last.t - first.t) / (last.x - first.x);
-  if (!Number.isFinite(seconds) || seconds < 0) return "";
-  return formatDuration(seconds) + " until perfection";
+  if (!Number.isFinite(seconds) || seconds < 0) return null;
+  const sig = [fit.slope, fit.intercept, fit.xb, first.t, last.t, target].join("|");
+  return { kind: "time", seconds, sig };
 }
+
+const clocks = {};
+
+function rememberClock(id, state) {
+  if (!state) {
+    clocks[id] = null;
+    return;
+  }
+  if (state.kind !== "time") {
+    clocks[id] = state;
+    return;
+  }
+  const prev = clocks[id];
+  if (prev && prev.kind === "time" && prev.sig === state.sig) return;
+  clocks[id] = { kind: "time", seconds: state.seconds, at: Date.now(), sig: state.sig };
+}
+
+function paintClocks() {
+  for (const [id, item] of Object.entries(clocks)) {
+    const node = document.getElementById(id);
+    if (!node) continue;
+    if (!item) {
+      node.textContent = "";
+      continue;
+    }
+    if (item.kind !== "time") {
+      node.textContent = item.label;
+      continue;
+    }
+    const left = item.seconds - (Date.now() - item.at) / 1000;
+    node.textContent = formatClock(left) + " until perfection";
+  }
+}
+
+setInterval(paintClocks, 1000);
 
 function drawChart(canvas, spec) {
   const width = canvas.clientWidth;
@@ -366,11 +420,12 @@ function drawChart(canvas, spec) {
       xPoints.push({ x: point.x, y: point.y0 }, { x: point.x, y: point.y1 });
     }
   }
-  const pad = { l: 46, r: 12, t: 12, b: 24 };
+  const pad = { l: 46, r: 12, t: 8, b: 24 };
   if (!xPoints.length) {
     ctx.fillStyle = "#5e584f";
     ctx.font = "13px ui-sans-serif, system-ui, sans-serif";
     ctx.fillText("No points yet", pad.l, height / 2);
+    placeChartLabels(spec, null, []);
     return;
   }
   let x0 = Math.min(...xPoints.map((point) => point.x));
@@ -458,16 +513,19 @@ function drawChart(canvas, spec) {
     }
   }
   ctx.restore();
-  if (fit) {
-    const labels = [trendText(fit.slope)];
-    const eta = spec.perfect == null ? "" : etaText(spec.series[0].points, fit, spec.perfect);
-    if (eta) labels.push(eta);
-    ctx.font = "11px ui-sans-serif, system-ui, sans-serif";
-    ctx.fillStyle = "#2456a3";
-    labels.forEach((text, index) => {
-      ctx.fillText(text, width - pad.r - ctx.measureText(text).width, pad.t + 11 + index * 13);
-    });
+  placeChartLabels(spec, fit, (spec.series[0] && spec.series[0].points) || []);
+}
+
+function placeChartLabels(spec, fit, points) {
+  const badge = spec.badge ? document.getElementById(spec.badge) : null;
+  if (badge) badge.textContent = fit ? trendText(fit.slope) : "";
+  if (!spec.eta) return;
+  if (!fit || spec.perfect == null) {
+    rememberClock(spec.eta, null);
+  } else {
+    rememberClock(spec.eta, etaState(points, fit, spec.perfect));
   }
+  paintClocks();
 }
 
 function drawCharts(rows) {
@@ -477,6 +535,8 @@ function drawCharts(rows) {
     dots: dots(rows, "reward_mean"),
     yMax: 1,
     perfect: 1,
+    eta: "eta-reward",
+    badge: "badge-reward",
   });
   drawChart(document.getElementById("chart-cer"), {
     series: [{ color: "#1f4b3a", points: points(rows, "cer_mean") }],
@@ -484,12 +544,16 @@ function drawCharts(rows) {
     dots: dots(rows, "cer_mean"),
     yMin: 0,
     perfect: 0,
+    eta: "eta-cer",
+    badge: "badge-cer",
   });
   drawChart(document.getElementById("chart-kl"), {
     series: [{ color: "#1f4b3a", points: points(rows, "kl") }],
+    badge: "badge-kl",
   });
   drawChart(document.getElementById("chart-steps"), {
     series: [{ color: "#1f4b3a", points: points(rows, "steps_mean") }],
+    badge: "badge-steps",
   });
 }
 
