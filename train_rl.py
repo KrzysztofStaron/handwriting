@@ -82,9 +82,8 @@ def parse_args(argv=None):
                         help="Cost table JSON. Default: vcer/table.json.")
     parser.add_argument("--confidence", type=float, default=0.2,
                         help="Share of the reward taken from TrOCR's token confidence. "
-                             "High confidence raises the reward when CER is low and lowers "
-                             "it when CER is high. 0 leaves the string score unchanged. "
-                             "Requires --beams 1.")
+                             "High confidence raises the reward. 0 leaves the string "
+                             "score unchanged. Requires --beams 1.")
     parser.add_argument("--straightness", type=float, default=0.05,
                         help="Most a crooked line can lose. Two parallel lines sit on the "
                              "top and bottom of the ink. A flat pair (slope 0, no arch) "

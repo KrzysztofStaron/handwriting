@@ -203,18 +203,15 @@ def token_confidence(scores, sequences, skip_ids):
     return confidences
 
 
-def mix_confidence(reward, confidence, weight, cer):
-    """Keep the string score in charge. Confidence is good only when the read is close.
+def mix_confidence(reward, confidence, weight):
+    """Keep the string score in charge and add TrOCR confidence on top.
 
-    The confidence term is confidence * (1 - 2 * min(CER, 1)). It is +confidence
-    at CER 0, zero at CER 0.5, and -confidence at CER 1 or above. `weight` is
-    that term's share of the reward. The rest stays the string reward.
+    `weight` is confidence's share of the reward. The rest stays the string
+    reward. Confidence is in [0, 1], so this term never subtracts.
     """
     if confidence is None or weight <= 0:
         return float(reward)
-    error = min(max(float(cer), 0.0), 1.0)
-    signed = float(confidence) * (1.0 - 2.0 * error)
-    return (1.0 - weight) * float(reward) + weight * signed
+    return (1.0 - weight) * float(reward) + weight * float(confidence)
 
 
 def line_straightness(seq, std, bins=12):
@@ -889,8 +886,8 @@ class TrocrScorer:
         if details is not None:
             for item, confidence in zip(details, confs):
                 item["confidence"] = confidence
-        return [mix_confidence(reward, confidence, weight, cer)
-                for reward, confidence, cer in zip(rewards, confs, cers)]
+        return [mix_confidence(reward, confidence, weight)
+                for reward, confidence in zip(rewards, confs)]
 
     @torch.no_grad()
     def read(self, images, max_new_tokens=64):

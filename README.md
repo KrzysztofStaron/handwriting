@@ -136,7 +136,7 @@ Both stages keep `models/best-4.pth` as a frozen KL anchor and never write that 
 
 | `--reward` | value |
 |---|---|
-| `cer` (default) | `0.8 * (1 - min(CER, 1)) + 0.2 * exact`, then mixed with TrOCR confidence (`--confidence`, default 0.2). High confidence helps a close read and hurts a wrong one. |
+| `cer` (default) | `0.8 * (1 - min(CER, 1)) + 0.2 * exact`, then mixed with TrOCR confidence (`--confidence`, default 0.2). High confidence raises the reward. |
 | `vcer` | The same shape, with a visual edit distance in place of CER. |
 | `exp` | `exp(-CER)`, in (0, 1] |
 | `linear` | `1 - CER` |

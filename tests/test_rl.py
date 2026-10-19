@@ -260,15 +260,15 @@ class ScorerTests(unittest.TestCase):
         self.assertGreater(only_sure, 0.99)
         self.assertAlmostEqual(both, only_sure ** 0.5 * 0.5 ** 0.5, places=5)
         self.assertEqual(token_confidence((sure,), sequences[:, :2], skip_ids={0, 1}), [0.0])
-        self.assertAlmostEqual(mix_confidence(1.0, 0.5, 0.2, cer=0.0), 0.9)
-        self.assertAlmostEqual(mix_confidence(1.0, 0.5, 0.0, cer=1.0), 1.0)
-        close = mix_confidence(1.0, 1.0, 0.2, cer=0.0)
-        unsure_close = mix_confidence(1.0, 0.0, 0.2, cer=0.0)
-        wrong = mix_confidence(0.0, 1.0, 0.2, cer=1.0)
-        unsure_wrong = mix_confidence(0.0, 0.0, 0.2, cer=1.0)
+        self.assertAlmostEqual(mix_confidence(1.0, 0.5, 0.2), 0.9)
+        self.assertAlmostEqual(mix_confidence(1.0, 0.5, 0.0), 1.0)
+        close = mix_confidence(1.0, 1.0, 0.2)
+        unsure_close = mix_confidence(1.0, 0.0, 0.2)
+        wrong = mix_confidence(0.0, 1.0, 0.2)
+        unsure_wrong = mix_confidence(0.0, 0.0, 0.2)
         self.assertGreater(close, unsure_close)
-        self.assertLess(wrong, unsure_wrong)
-        self.assertAlmostEqual(mix_confidence(0.5, 1.0, 0.2, cer=0.5), 0.4)
+        self.assertGreater(wrong, unsure_wrong)
+        self.assertAlmostEqual(mix_confidence(0.5, 1.0, 0.2), 0.6)
 
     def test_score_mixes_in_a_stashed_confidence(self):
         from rl import TrocrScorer
@@ -294,9 +294,9 @@ class ScorerTests(unittest.TestCase):
         scorer.read = fake_wrong
         rewards, cers, hyps = scorer.score([None, None], ["hi", "hi"])
         self.assertEqual(cers, [1.0, 1.0])
-        self.assertAlmostEqual(rewards[0], -0.25)
+        self.assertAlmostEqual(rewards[0], 0.25)
         self.assertAlmostEqual(rewards[1], 0.0)
-        self.assertLess(rewards[0], rewards[1])
+        self.assertGreater(rewards[0], rewards[1])
 
 
 class CheckpointTests(unittest.TestCase):
