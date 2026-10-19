@@ -5,8 +5,9 @@ start from a blank page. The best four are kept, and each is continued four
 ways. TrOCR scores the ink of everything written so far against those words
 plus the word just added. The gradient is applied only to the new strokes.
 The 10 samples at a checkpoint are only a review sheet of the full sentence.
-Some training lines are ten short random words from the model alphabet, so the
-policy also writes strings the play does not contain. One logged update is
+Some training lines are ten short random words from the model alphabet, and
+some are lowercase dictionary words no longer than a play line, so the policy
+also writes strings the play does not contain. One logged update is
 the whole line. Its reward, CER, KL, and length are the average of every
 drawing in that line.
 
@@ -42,6 +43,7 @@ from rl import (
     add_policy_args,
     advantages,
     choose_label,
+    load_dictionary,
     consistency_sheet,
     draw_temperatures,
     line_straightness,
@@ -87,6 +89,13 @@ def parse_args(argv=None):
                         help="Chance a training line is ten random words of at most 4 "
                              "letters or digits from the model alphabet, instead of a "
                              "line from --prompts. 0 keeps the file.")
+    parser.add_argument("--words", type=float, default=0.25,
+                        help="Chance a training line is random lowercase dictionary "
+                             "words, with no punctuation, cut so it is no longer than "
+                             "--max-chars. 0 leaves that chance to the play and --novel.")
+    parser.add_argument("--dict", default="/usr/share/dict/words",
+                        help="Word list for --words. One word per line. "
+                             "Capitals, digits, and punctuation are dropped.")
     parser.add_argument("--reward", choices=("cer", "vcer", "exp", "linear", "soft"), default="cer",
                         help="cer: 0.8*(1-min(CER,1))+0.2*exact (default). "
                              "vcer: the same shape with a visual edit distance. "
@@ -364,9 +373,15 @@ def beam_stages(model, ref, scorer, optimizer, prompts, stoi, std, device, args,
     from generate import sample_batch
 
     # A pinned --text stays as given. Otherwise some lines are ten short
-    # random words, so the policy also practices strings the play never contains.
-    chance = 0.0 if getattr(args, "text", None) else getattr(args, "novel", 0.0)
-    text, source = choose_label(prompts, stoi, chance, getattr(args, "max_chars", 48))
+    # random words, and some are dictionary words, so the policy also
+    # practices strings the play never contains.
+    pinned = getattr(args, "text", None)
+    novel = 0.0 if pinned else getattr(args, "novel", 0.0)
+    words = 0.0 if pinned else getattr(args, "words", 0.0)
+    text, source = choose_label(
+        prompts, stoi, novel, getattr(args, "max_chars", 48),
+        words=words, lexicon=getattr(args, "lexicon", None),
+    )
     prefixes = word_prefixes(text)
     branch = args.beam // args.keep
     print(f"    {text!r}  {len(prefixes)} words  beam {args.beam}  keep {args.keep}",
@@ -574,6 +589,10 @@ def main():
         raise SystemExit("--beam must be at least 2 and a multiple of --keep")
     if not 0.0 <= args.novel <= 1.0:
         raise SystemExit("--novel must be between 0 and 1")
+    if not 0.0 <= args.words <= 1.0:
+        raise SystemExit("--words must be between 0 and 1")
+    if args.novel + args.words > 1.0:
+        raise SystemExit("--novel and --words together cannot exceed 1")
     if args.review_k < 1:
         raise SystemExit("--review-k must be >= 1")
     if args.block_minutes <= 0:
@@ -643,10 +662,17 @@ def main():
         review_text = resolve_review_text(args.review_text, run_path, stoi)
         prompts = resolve_prompts(args.text, args.prompts, stoi, args.min_chars, args.max_chars)
         std = load_std()
-        novel_bit = ""
+        lexicon = None
+        if not args.text and args.words > 0:
+            lexicon = load_dictionary(args.dict, stoi, args.max_chars)
+        args.lexicon = lexicon
+        mix = []
         if not args.text and args.novel > 0:
-            novel_bit = f"   novel 10-word line on {args.novel:.0%} of draws"
-        print(f"prompts: {len(prompts)}{novel_bit}   "
+            mix.append(f"novel 10-word line on {args.novel:.0%} of draws")
+        if lexicon is not None:
+            mix.append(f"dictionary words on {args.words:.0%} of draws ({len(lexicon)} words)")
+        mix_bit = ("   " + "   ".join(mix)) if mix else ""
+        print(f"prompts: {len(prompts)}{mix_bit}   "
               f"review sentence: {review_text!r} x {args.review_k}",
               flush=True)
 
@@ -706,6 +732,7 @@ def main():
             "beam": args.beam,
             "keep": args.keep,
             "novel": 0.0 if args.text else args.novel,
+            "words": 0.0 if args.text else args.words,
             "temperature_min": args.temp_min,
             "temperature_max": args.temp_max,
             "temperature_distribution": "normal",

@@ -777,13 +777,96 @@ def novel_line(stoi, words=10, min_len=1, max_len=4, max_chars=48):
     return " ".join(parts)
 
 
-def choose_label(prompts, stoi, novel, max_chars=48):
-    """A line from the pool, or with probability `novel` ten short random words.
+def load_dictionary(path, stoi, max_chars):
+    """Lowercase words of letters only. Capitals, punctuation, and digits are dropped.
 
-    Returns `(text, source)` where source is `novel` or `play`.
+    A word longer than `max_chars` cannot be a training line on its own.
     """
-    if novel > 0 and random.random() < novel:
+    vocab = set(stoi)
+    seen = set()
+    words = []
+    for raw in Path(path).read_text(encoding="utf-8", errors="replace").splitlines():
+        word = raw.strip().lower()
+        if len(word) < 2 or len(word) > max_chars:
+            continue
+        if not word.isascii() or not word.isalpha():
+            continue
+        if any(ch not in vocab for ch in word):
+            continue
+        if word in seen:
+            continue
+        seen.add(word)
+        words.append(word)
+    if not words:
+        raise SystemExit(
+            f"no lowercase words in {path} fit in {max_chars} characters "
+            "and the model alphabet"
+        )
+    return words
+
+
+def word_line(lexicon, max_chars=48):
+    """Random dictionary words, all lowercase, no longer than a play line.
+
+    Words are drawn until another one would pass `max_chars`. The joined
+    line stays inside the same character cap as the Romeo prompts.
+    """
+    if max_chars < 1:
+        raise ValueError("max_chars must leave room for a word")
+    pool = [word for word in lexicon if 2 <= len(word) <= max_chars]
+    if not pool:
+        raise ValueError("no dictionary word fits in max_chars")
+    by_length = {}
+    for word in pool:
+        by_length.setdefault(len(word), []).append(word)
+    picked = []
+    length = 0
+    used = set()
+    misses = 0
+    while misses < 40:
+        room = max_chars - length - (0 if not picked else 1)
+        if room < 2:
+            break
+        lengths = [n for n in by_length if n <= room]
+        if not lengths:
+            break
+        sizes = [len(by_length[n]) for n in lengths]
+        draw = random.randrange(sum(sizes))
+        chosen = lengths[0]
+        covered = 0
+        for n, size in zip(lengths, sizes):
+            covered += size
+            if draw < covered:
+                chosen = n
+                break
+        bucket = by_length[chosen]
+        word = bucket[random.randrange(len(bucket))]
+        if word in used:
+            misses += 1
+            continue
+        picked.append(word)
+        used.add(word)
+        length += len(word) if len(picked) == 1 else len(word) + 1
+        misses = 0
+    if not picked:
+        raise ValueError("no dictionary word fits in max_chars")
+    return " ".join(picked)
+
+
+def choose_label(prompts, stoi, novel, max_chars=48, words=0.0, lexicon=None):
+    """A play line, a random alphabet line, or lowercase dictionary words.
+
+    `novel` and `words` are chances and share one draw, so they must add up
+    to at most 1. The rest of the draws stay on the play. Returns
+    `(text, source)` where source is `novel`, `words`, or `play`.
+    """
+    roll = random.random()
+    if novel > 0 and roll < novel:
         return novel_line(stoi, max_chars=max_chars), "novel"
+    if words > 0 and roll < novel + words:
+        if not lexicon:
+            raise ValueError("dictionary lines need a word list")
+        return word_line(lexicon, max_chars=max_chars), "words"
     return pick_prompts(prompts, 1)[0], "play"
 
 

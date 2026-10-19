@@ -208,8 +208,9 @@
   <div class="views" role="group" aria-label="Which lines Reward and CER show">
     <span>Reward and CER</span>
     <button type="button" data-view="novel">Novel</button>
+    <button type="button" data-view="words">Words</button>
     <button type="button" data-view="play">R&amp;J</button>
-    <button type="button" data-view="both" class="on">Both</button>
+    <button type="button" data-view="both" class="on">All</button>
   </div>
   <section class="charts">
     <figure>
@@ -621,7 +622,7 @@ function rowText(row) {
 }
 
 function rowKind(row) {
-  if (row.source === "novel" || row.source === "play") return row.source;
+  if (row.source === "novel" || row.source === "play" || row.source === "words") return row.source;
   return isNovelText(rowText(row)) ? "novel" : "play";
 }
 
@@ -670,8 +671,11 @@ function sessionLine(session) {
   if (session.straightness) bits.push("straight " + session.straightness);
   if (session.beam) bits.push("beam " + session.beam + " × " + (session.keep || "?"));
   if (session.novel) bits.push("novel " + session.novel);
-  else if (session.batch) bits.push(session.batch + " × " + (session.k || "?"));
-  else if (session.k) bits.push("k=" + session.k);
+  if (session.words) bits.push("words " + session.words);
+  if (!session.novel && !session.words) {
+    if (session.batch) bits.push(session.batch + " × " + (session.k || "?"));
+    else if (session.k) bits.push("k=" + session.k);
+  }
   if (session.temperature_min != null && session.temperature_max != null) {
     const shape = session.temperature_distribution === "normal" ? "normal " : "";
     bits.push(shape + session.temperature_min + "–" + session.temperature_max);

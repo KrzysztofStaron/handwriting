@@ -29,6 +29,8 @@ from rl import (
     group_advantages,
     choose_label,
     history_state,
+    load_dictionary,
+    word_line,
     load_policy_and_ref,
     logprobs_from_states,
     novel_line,
@@ -608,8 +610,40 @@ class BeamTests(unittest.TestCase):
             self.assertTrue(all(len(line.split()) == 10 for line, _kind in fresh))
             self.assertTrue(all(len(word) <= 4 for line, _kind in fresh for word in line.split()))
             self.assertTrue(all(set(line) <= set("abcABC012 ") for line, _kind in fresh))
+            lexicon = ["stone", "quiet", "apple", "river"]
+            dictated = [choose_label(prompts, stoi, 0.0, words=1.0, lexicon=lexicon) for _ in range(8)]
+            self.assertTrue(all(kind == "words" for _line, kind in dictated))
+            self.assertTrue(all(set(line.split()) <= set(lexicon) for line, _kind in dictated))
         finally:
             random.setstate(state)
+
+    def test_dictionary_words_are_lowercase_and_no_longer_than_the_play(self):
+        state = random.getstate()
+        random.seed(2)
+        try:
+            lexicon = ["aa" + chr(ord("a") + i) for i in range(20)]
+            for _ in range(30):
+                line = word_line(lexicon, max_chars=48)
+                words = line.split(" ")
+                self.assertEqual(line, " ".join(words))
+                self.assertGreaterEqual(len(words), 2)
+                self.assertLessEqual(len(line), 48)
+                self.assertGreaterEqual(len(line), 48 - min(len(word) for word in lexicon))
+                for word in words:
+                    self.assertRegex(word, r"^[a-z]+$")
+                    self.assertIn(word, lexicon)
+            self.assertLessEqual(len(word_line(["alphabet"], max_chars=8)), 8)
+            with self.assertRaises(ValueError):
+                word_line(["toolong"], max_chars=4)
+        finally:
+            random.setstate(state)
+
+    def test_dictionary_loader_drops_capitals_and_punctuation(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "words.txt"
+            path.write_text("Apple\nDon't\nwell-known\nstone\nSTONE\nCafé\n123\na\n\n", encoding="utf-8")
+            stoi = {ch: i for i, ch in enumerate("abcdefghijklmnopqrstuvwxyz ")}
+            self.assertEqual(load_dictionary(path, stoi, 48), ["apple", "stone"])
 
     def test_split_logprob_matches_one_replay_of_the_same_text(self):
         torch.manual_seed(0)
