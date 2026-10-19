@@ -143,7 +143,7 @@ Both stages keep `models/best-4.pth` as a frozen KL anchor and never write that 
 | `linear` | `1 - CER` |
 | `soft` | `1` when CER is at or below `--tau` (default 0.1), then a straight fall to 0 at CER = 1 |
 
-A crooked line then loses a little more. Two parallel lines sit on the top and the bottom of the ink and share one slope. A flat pair, slope 0 and no arch, loses nothing. `--straightness` (default 0.05) is the most that penalty can subtract.
+A crooked line then loses a little more. The left quarter and the right quarter of the ink each have a band from the 10th to the 90th percentile. The score is how far the right band has moved from the left band, divided by the letter height, and the middle is compared with the ends the same way. A level line loses nothing. `--straightness` (default 0.05) is the most that penalty can subtract.
 
 Uneven gaps between words lose a little more on top of that. The text says how many word gaps there are, and those are the widest blanks between pen strokes. A gap inside a word is smaller and does not count. The penalty is the squared distance of those widths from their middle width, so a small wobble is almost free and a mix of tiny and huge gaps costs. `--spacing` (default 0.05) is the most that can subtract.
 

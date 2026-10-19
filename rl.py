@@ -228,13 +228,14 @@ def mix_confidence(reward, confidence, weight):
     return (1.0 - weight) * float(reward) + weight * float(confidence)
 
 
-def line_straightness(seq, std, bins=12):
-    """How far the ink sits from two parallel horizontal lines. 0 is flat.
+def line_straightness(seq, std, side=0.25):
+    """How far the writing on the right sits from the writing on the left. 0 is level.
 
-    One line rides the top of the writing and one rides the bottom. They share
-    a slope. A flat pair has slope 0 and no leftover arch. The score adds the
-    rise across the whole line and the wobble around those lines, each divided
-    by the text height, and stops at 1. A short or empty stroke scores 0.
+    Each end is the band from the 10th to the 90th percentile of the ink there.
+    The score is how far the right band has moved from the left band, divided
+    by the height of those bands. A small rise is a small score. The middle
+    band is compared with the two ends the same way, so an arch counts too.
+    The total stops at 1. A short or empty stroke scores 0.
     """
     if torch.is_tensor(seq):
         seq = seq.detach().cpu().numpy()
@@ -242,53 +243,45 @@ def line_straightness(seq, std, bins=12):
     if seq.ndim != 2 or seq.shape[0] < 8 or seq.shape[1] < 2 or not np.isfinite(seq).all():
         return 0.0
     xy = np.cumsum(seq[:, :2] * float(std), axis=0)
-    order = np.argsort(xy[:, 0], kind="stable")
-    xs = xy[order, 0]
-    ys = xy[order, 1]
-    width = float(xs[-1] - xs[0])
+    xs = xy[:, 0]
+    ys = xy[:, 1]
+    width = float(xs.max() - xs.min())
     if width < 1e-6:
         return 0.0
-    count = len(xs)
-    bins = int(min(bins, count // 3))
-    if bins < 4:
+    side = float(side)
+    left = _ink_band(xs, ys, float(xs.min()), float(xs.min()) + side * width)
+    right = _ink_band(xs, ys, float(xs.max()) - side * width, float(xs.max()))
+    if left is None or right is None:
         return 0.0
-    edges = np.linspace(0, count, bins + 1, dtype=int)
-    tops, bots, mids = [], [], []
-    for start, stop in zip(edges[:-1], edges[1:]):
-        chunk_y = ys[start:stop]
-        chunk_x = xs[start:stop]
-        if len(chunk_y) < 3:
-            continue
-        bots.append(float(np.percentile(chunk_y, 20)))
-        tops.append(float(np.percentile(chunk_y, 80)))
-        mids.append(float(chunk_x.mean()))
-    if len(mids) < 4:
-        return 0.0
-    x = np.asarray(mids)
-    top = np.asarray(tops)
-    bot = np.asarray(bots)
+    height = 0.5 * ((left[1] - left[0]) + (right[1] - right[0]))
+    height = max(height, 1e-3)
+    tilt = _band_shift(left, right) / height
+    middle = _ink_band(
+        xs, ys,
+        float(xs.min()) + (0.5 - side / 2.0) * width,
+        float(xs.min()) + (0.5 + side / 2.0) * width,
+    )
+    arch = 0.0
+    if middle is not None:
+        ends = (
+            0.5 * (left[0] + right[0]),
+            0.5 * (left[1] + right[1]),
+        )
+        arch = _band_shift(middle, ends) / height
+    return float(min(1.0, tilt + arch))
 
-    def slope(values):
-        centered_x = x - x.mean()
-        centered_y = values - values.mean()
-        spread = float(np.dot(centered_x, centered_x))
-        if spread < 1e-12:
-            return 0.0
-        return float(np.dot(centered_x, centered_y) / spread)
 
-    # Equal weight on the top and the bottom, so one shared slope.
-    slant = 0.5 * (slope(top) + slope(bot))
-    top_offset = float(top.mean() - slant * x.mean())
-    bot_offset = float(bot.mean() - slant * x.mean())
-    leftover = np.concatenate([
-        top - (slant * x + top_offset),
-        bot - (slant * x + bot_offset),
-    ])
-    rms = float(np.sqrt(np.mean(leftover ** 2)))
-    height = max(float(np.mean(top - bot)), 1e-3)
-    tilt = abs(slant) * width / height
-    wobble = rms / height
-    return float(min(1.0, tilt + wobble))
+def _ink_band(xs, ys, x0, x1):
+    """10th and 90th percentile of y for the ink between x0 and x1."""
+    chosen = ys[(xs >= x0) & (xs <= x1)]
+    if chosen.size < 4:
+        return None
+    return float(np.percentile(chosen, 10)), float(np.percentile(chosen, 90))
+
+
+def _band_shift(one, other):
+    """How far two ink bands are from each other, top edge and bottom edge."""
+    return 0.5 * (abs(one[0] - other[0]) + abs(one[1] - other[1]))
 
 
 def spacing_inconsistency(seq, std, text):

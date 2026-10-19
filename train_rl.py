@@ -118,9 +118,10 @@ def parse_args(argv=None):
                              "High confidence raises the reward. 0 leaves the string "
                              "score unchanged. Requires --beams 1.")
     parser.add_argument("--straightness", type=float, default=0.05,
-                        help="Most a crooked line can lose. Two parallel lines sit on the "
-                             "top and bottom of the ink. A flat pair (slope 0, no arch) "
-                             "loses nothing. 0 turns the penalty off.")
+                        help="Most a crooked line can lose. The ink band on the right is "
+                             "compared with the ink band on the left, each from the 10th "
+                             "to the 90th percentile. A level line loses nothing. "
+                             "0 turns the penalty off.")
     parser.add_argument("--spacing", type=float, default=0.05,
                         help="Most uneven word spacing can lose. The widths of the gaps "
                              "between words are compared with their middle width. A small "
