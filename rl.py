@@ -34,7 +34,7 @@ import numpy as np
 import torch
 
 from data import collate
-from generate import load_model, sample_batch
+from generate import _row_state, load_model, sample_batch, stack_states
 from model import split_params
 from vcer.reward import tighten_punctuation
 
@@ -388,6 +388,96 @@ def trajectory_logprobs(model, seqs, texts, stoi, device, temperature, sharpen,
     return per.sum(dim=1), mask.sum(dim=1)
 
 
+def _detach_hidden(hidden):
+    h1, c1, s2, s3, w, kappa = hidden
+
+    def lstm(state):
+        if state is None:
+            return None
+        h, c = state
+        return (h.detach(), c.detach())
+
+    return (h1.detach(), c1.detach(), lstm(s2), lstm(s3), w.detach(), kappa.detach())
+
+
+def _replay_hidden(model, seq, text, stoi, device, sharpen):
+    """Pen state after teacher-forcing `seq` under `text`. The next input is seq[-1]."""
+    model.window_sharpen = sharpen
+    x, _y, _mask, c, c_mask = collate(
+        _replay_batch([seq], [text], stoi), vocab_size=len(stoi))
+    x, c, c_mask = x.to(device), c.to(device), c_mask.to(device)
+    with torch.no_grad():
+        _out, hidden, _phi, _phi_end = model(x, c, c_mask)
+    return _detach_hidden(hidden)
+
+
+def _advance_hidden(model, hidden, last_point, seq, text, stoi, device, sharpen):
+    """Carry `hidden` across `seq`. `last_point` is the pen step already on the page."""
+    model.window_sharpen = sharpen
+    seq = seq.detach().float().cpu()
+    start = last_point.detach().float().cpu().reshape(1, 3)
+    inp = torch.cat([start, seq[:-1]], dim=0)
+    idx = torch.tensor([stoi[ch] for ch in text], dtype=torch.long)
+    x, _y, _mask, c, c_mask = collate([(inp, seq, idx)], vocab_size=len(stoi))
+    x, c, c_mask = x.to(device), c.to(device), c_mask.to(device)
+    with torch.no_grad():
+        _out, nxt, _phi, _phi_end = model(x, c, c_mask, hidden)
+    return _detach_hidden(nxt)
+
+
+def history_state(model, segments, stoi, device, sharpen):
+    """Pen state after each past word, under the text that word was sampled with."""
+    text0, seq0 = segments[0]
+    hidden = _replay_hidden(model, seq0, text0, stoi, device, sharpen)
+    last = seq0[-1]
+    for text, seq in segments[1:]:
+        hidden = _advance_hidden(model, hidden, last, seq, text, stoi, device, sharpen)
+        last = seq[-1]
+    return _row_state(hidden, last.detach().cpu().unsqueeze(0), 0)
+
+
+def _segment_rows(last_points, news, texts, stoi):
+    """Teacher-forced rows whose first input is the last point already drawn."""
+    rows = []
+    for last, new, text in zip(last_points, news, texts):
+        missing = [ch for ch in text if ch not in stoi]
+        if missing:
+            raise ValueError(f"text has characters outside the vocab: {sorted(set(missing))}")
+        new = new.detach().float().cpu()
+        if new.ndim != 2 or new.shape[-1] != 3 or new.shape[0] == 0:
+            raise ValueError("new segment must be (T, 3) with T > 0")
+        start = last.detach().float().cpu().reshape(1, 3)
+        inp = torch.cat([start, new[:-1]], dim=0)
+        idx = torch.tensor([stoi[ch] for ch in text], dtype=torch.long)
+        rows.append((inp, new, idx))
+    return rows
+
+
+def logprobs_from_states(model, states, news, texts, stoi, device, temperature, sharpen,
+                         temperatures=None):
+    """Log-density of new points given the pen states they were sampled from.
+
+    The state is a constant, so the gradient stays on the word just added.
+    """
+    if temperatures is None:
+        temperatures = [float(temperature)] * len(news)
+    if not (len(states) == len(news) == len(texts) == len(temperatures)):
+        raise ValueError("one state, text, and temperature per new segment")
+    if any(float(value) <= 0 for value in temperatures):
+        raise ValueError("temperature must be > 0; 0 is a point mass and has no density")
+    hidden, _x = stack_states(states, device)
+    hidden = _detach_hidden(hidden)
+    last_points = [item["x"] for item in states]
+    x, y, mask, c, c_mask = collate(
+        _segment_rows(last_points, news, texts, stoi), vocab_size=len(stoi))
+    x, y, mask, c, c_mask = [t.to(device) for t in (x, y, mask, c, c_mask)]
+    model.window_sharpen = sharpen
+    out, _, _, _ = model(x, c, c_mask, hidden)
+    temp = torch.tensor([float(value) for value in temperatures], dtype=out.dtype, device=device)
+    per = step_logprob(out, y, temperature=temp) * mask
+    return per.sum(dim=1), mask.sum(dim=1)
+
+
 def trajectory_logprob(model, seq, text, stoi, device, temperature, sharpen):
     """Teacher-forced sum of log pi(seq | text), and the number of real steps."""
     total, length = trajectory_logprobs(
@@ -493,12 +583,30 @@ def reinforce_step(model, ref, rollouts, advs, stoi, device, temperature,
         seqs = [rollouts[index]["seq"] for index in chosen]
         texts = [rollouts[index]["text"] for index in chosen]
         temps = [traces[index]["temperature"] for index in chosen]
-        logp, length = trajectory_logprobs(
-            model, seqs, texts, stoi, device, temperature, sharpen, temperatures=temps)
+        continued = rollouts[chosen[0]].get("state") is not None
+        if any((rollouts[index].get("state") is not None) != continued for index in chosen):
+            raise RuntimeError("a gradient chunk mixed a fresh line with a continued word")
+        if continued:
+            pen_states = [rollouts[index]["state"] for index in chosen]
+            logp, length = logprobs_from_states(
+                model, pen_states, seqs, texts, stoi, device,
+                temperature, sharpen, temperatures=temps)
+        else:
+            logp, length = trajectory_logprobs(
+                model, seqs, texts, stoi, device, temperature, sharpen, temperatures=temps)
         if kl_coef:
             with torch.no_grad():
-                logp_ref, _ = trajectory_logprobs(
-                    ref, seqs, texts, stoi, device, temperature, sharpen, temperatures=temps)
+                if continued:
+                    ref_states = [
+                        history_state(ref, rollouts[index]["history"], stoi, device, sharpen)
+                        for index in chosen
+                    ]
+                    logp_ref, _ = logprobs_from_states(
+                        ref, ref_states, seqs, texts, stoi, device,
+                        temperature, sharpen, temperatures=temps)
+                else:
+                    logp_ref, _ = trajectory_logprobs(
+                        ref, seqs, texts, stoi, device, temperature, sharpen, temperatures=temps)
         else:
             logp_ref = torch.zeros(len(chosen), device=logp.device)
         losses = []
@@ -615,6 +723,22 @@ def resolve_prompts(text, path, stoi, min_chars, max_chars):
             raise SystemExit(f"--text has characters outside the vocab: {missing}")
         return [text]
     return load_prompts(path, stoi, min_chars, max_chars)
+
+
+def word_prefixes(text):
+    """Cumulative words of a line. 'john is' becomes ['john', 'john is']."""
+    words = str(text).split()
+    if not words:
+        raise ValueError("prompt has no words")
+    return [" ".join(words[:end]) for end in range(1, len(words) + 1)]
+
+
+def select_top(rewards, keep):
+    """Indices of the highest rewards. Ties keep the earlier index."""
+    if keep < 1 or keep > len(rewards):
+        raise ValueError("keep must be between 1 and the number of rewards")
+    order = sorted(range(len(rewards)), key=lambda i: (-float(rewards[i]), i))
+    return order[:keep]
 
 
 def pick_prompts(prompts, n):

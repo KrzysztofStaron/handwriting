@@ -190,14 +190,60 @@ def _temperature_list(temperature, count):
     return values
 
 
+def _row_state(hidden, last_point, index):
+    """One row's pen state, detached, at the step that produced last_point[index]."""
+    h1, c1, s2, s3, w, kappa = hidden
+
+    def lstm(state):
+        if state is None:
+            return None
+        h, c = state
+        return (h[:, index:index + 1].detach().clone(), c[:, index:index + 1].detach().clone())
+
+    return {
+        "h1": h1[index:index + 1].detach().clone(),
+        "c1": c1[index:index + 1].detach().clone(),
+        "s2": lstm(s2),
+        "s3": lstm(s3),
+        "w": w[index:index + 1].detach().clone(),
+        "kappa": kappa[index:index + 1].detach().clone(),
+        "x": last_point[index].detach().reshape(3).clone(),
+    }
+
+
+def stack_states(states, device):
+    """Batch the per-row states saved by sample_batch."""
+    def lstm(key):
+        if states[0][key] is None:
+            return None
+        h = torch.cat([item[key][0].to(device) for item in states], dim=1)
+        c = torch.cat([item[key][1].to(device) for item in states], dim=1)
+        return (h, c)
+
+    hidden = (
+        torch.cat([item["h1"].to(device) for item in states], 0),
+        torch.cat([item["c1"].to(device) for item in states], 0),
+        lstm("s2"),
+        lstm("s3"),
+        torch.cat([item["w"].to(device) for item in states], 0),
+        torch.cat([item["kappa"].to(device) for item in states], 0),
+    )
+    x = torch.stack([item["x"].to(device).reshape(3) for item in states]).view(len(states), 1, 3)
+    return hidden, x
+
+
 def sample_batch(model, texts, stoi, device, temperature=1.0, max_steps=None,
-                 steps_per_char=50, tail_steps=12, min_steps=20, window_sharpen=2.0):
+                 steps_per_char=50, tail_steps=12, min_steps=20, window_sharpen=2.0,
+                 states=None, return_state=False):
     """Sample one trajectory per text in one autoregressive loop.
 
     `temperature` is a float, or one float per text. Each row uses that
     temperature, the shared sharpen, and the same stop rule as sample().
     Temperature 0 draws the mode. A row that has already stopped stays in the
     batch so the others can keep stepping, and its later points are discarded.
+    `states` resumes each row from a pen state saved earlier; the returned
+    points are only the new ones. With `return_state`, also return the pen
+    state at the step each row stopped.
     Returns a list of (T, 3) CPU tensors, one per text.
     """
     if not texts:
@@ -226,13 +272,26 @@ def sample_batch(model, texts, stoi, device, temperature=1.0, max_steps=None,
         c[i, torch.arange(lengths[i], device=device), index] = 1.0
         c_mask[i, :lengths[i]] = 1.0
 
-    x = torch.zeros(count, 1, 3, device=device)
-    hidden = None
+    if states is None:
+        x = torch.zeros(count, 1, 3, device=device)
+        hidden = None
+    else:
+        if len(states) != count:
+            raise ValueError(f"expected {count} pen states, got {len(states)}")
+        hidden, x = stack_states(states, device)
     active = torch.ones(count, dtype=torch.bool)
     reached = torch.full((count,), -1, dtype=torch.long)
     budget = torch.tensor(budgets, dtype=torch.long)
     points = [[] for _ in range(count)]
+    saved = [None] * count
     row_temp = torch.tensor(temperatures, dtype=torch.float32, device=device)
+    last_hidden = None
+    last_step = None
+
+    def remember(mask, pen_hidden, pen_step):
+        for i in range(count):
+            if saved[i] is None and bool(mask[i]):
+                saved[i] = _row_state(pen_hidden, pen_step, i)
 
     with torch.no_grad():
         for t in range(limit):
@@ -278,6 +337,8 @@ def sample_batch(model, texts, stoi, device, temperature=1.0, max_steps=None,
             reached, done = stop_rows(
                 reached, take, moved[:, 2], moved[:, 3], moved[:, 4],
                 t, min_steps, tail_steps)
+            last_hidden, last_step = hidden, step
+            remember(done, hidden, step)
             active = active & ~done & ((t + 1) < budget)
             x = step.view(count, 1, 3)
             if count > 1 and t > 0 and t % 200 == 0:
@@ -288,7 +349,14 @@ def sample_batch(model, texts, stoi, device, temperature=1.0, max_steps=None,
         if not pts:
             raise RuntimeError(f"model produced an empty trajectory for {text!r}")
         sequences.append(torch.stack(pts, dim=0))
-    return sequences
+    if not return_state:
+        return sequences
+    missing = torch.tensor([item is None for item in saved])
+    if bool(missing.any()):
+        if last_hidden is None:
+            raise RuntimeError("sampler stopped before any pen step")
+        remember(missing, last_hidden, last_step)
+    return sequences, saved
 
 
 def save_plot(seq, std, path, title):

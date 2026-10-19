@@ -146,6 +146,8 @@ A crooked line then loses a little more. Two parallel lines sit on the top and t
 
 Prompts default to `data/romeo_juliet.txt`, the whole play cut into lines of at most 48 characters and sampled at random. `--prompts data/sentences.txt` is the IAM pool. `--max-chars` defaults to 48 so TrOCR's square resize does not squash the line.
 
+One prompt is grown a word at a time. The first word is drawn `--beam` times (default 9) from a blank page. The best `--keep` (default 3) continue, and each is extended `beam / keep` ways. TrOCR scores the ink of the whole prefix against the words written so far, including the word just added. The gradient covers only the new strokes, compared with the other continuations of the same prefix. Each word is its own logged update. `-k` and `--batch` do not change this.
+
 **Human preference.** The model draws 3 samples of one prompt. You pick the best. That sample scores 1 and the other two score 0.
 
 ```bash

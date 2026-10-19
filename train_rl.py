@@ -1,7 +1,10 @@
 """Post-train the handwriting policy with a TrOCR-Large reward.
 
-Training itself is unchanged in shape: several sentences, two draws each,
-REINFORCE on the CER reward. The 10 samples are only a review sheet.
+Each update grows one line a word at a time. Nine drawings of the first word
+start from a blank page. The best three are kept, and each is continued three
+ways. TrOCR scores the ink of everything written so far against those words
+plus the word just added. The gradient is applied only to the new strokes.
+The 10 samples at a checkpoint are only a review sheet of the full sentence.
 
 About every 10 minutes the loop writes a checkpoint and draws one fixed short
 sentence 10 times, so the sheets are comparable. Re-running with no arguments
@@ -39,6 +42,7 @@ from rl import (
     line_straightness,
     load_policy_and_ref,
     pick_prompts,
+    select_top,
     refuse_overwrite_base,
     reinforce_step,
     resolve_prompts,
@@ -47,6 +51,7 @@ from rl import (
     set_seed,
     short,
     strokes_to_images,
+    word_prefixes,
     rollout_batch,
 )
 from rl_events import EVENTS_NAME, EventLog, pack_draws
@@ -66,9 +71,14 @@ def parse_args(argv=None):
                     f"The base model is {BASE_CKPT} and is not modified.",
     )
     add_policy_args(parser, default_save="models/rl-trocr.pth")
-    parser.add_argument("--batch", type=int, default=4, help="Prompts per update.")
+    parser.add_argument("--batch", type=int, default=4,
+                        help="Unused by the word beam. Each update expands one prompt.")
     parser.add_argument("-k", type=int, default=8,
-                        help="Draws per prompt. The baseline is that prompt's mean reward.")
+                        help="Unused by the word beam. Width and survivors are --beam and --keep.")
+    parser.add_argument("--beam", type=int, default=9,
+                        help="Drawings of the current prefix. The first word starts from a blank page.")
+    parser.add_argument("--keep", type=int, default=3,
+                        help="Best prefixes carried forward. Each is continued beam/keep times.")
     parser.add_argument("--reward", choices=("cer", "vcer", "exp", "linear", "soft"), default="cer",
                         help="cer: 0.8*(1-min(CER,1))+0.2*exact (default). "
                              "vcer: the same shape with a visual edit distance. "
@@ -293,63 +303,123 @@ def save_training_sheet(images, refs, hyps, cers, rewards, path, update_no):
     return path.name
 
 
-def one_update(model, ref, scorer, optimizer, prompts, stoi, std, device, args, ema,
-               log=None, update_no=None, block=None, sheet_path=None):
-    """One on-policy update: `batch` sentences, `k` draws each."""
-    chosen = pick_prompts(prompts, args.batch)
-    texts = []
-    for text in chosen:
-        print(f"    {text!r}", flush=True)
-        texts.extend([text] * args.k)
-    temperatures = draw_temperatures(len(texts), args.temp_min, args.temp_max)
-    print(f"    drawing {len(texts)} lines in one batch", flush=True)
-    sequences = rollout_batch(
-        model, texts, stoi, device, temperatures, args.sharpen)
-    rollouts = []
-    for index, (text, seq, temp) in enumerate(zip(texts, sequences, temperatures)):
-        draw = index % args.k + 1
-        rollouts.append({"text": text, "seq": seq, "temperature": temp})
-        print(f"      draw {draw}/{args.k}  temp {temp:.2f}  ({seq.shape[0]} steps)", flush=True)
+def beam_stages(model, ref, scorer, optimizer, prompts, stoi, std, device, args, ema,
+                log=None, block=None, out_dir=None, counter=None):
+    """Grow one prompt word by word. Yield one scored stage per word.
+
+    The first stage draws `--beam` copies of the first word. Later stages keep
+    the `--keep` best prefixes and continue each one `beam / keep` times.
+    The picture is every stroke so far, and the target is every word so far,
+    including the word just added. The gradient covers only the new strokes.
+    """
+    from generate import sample_batch
+
+    text = pick_prompts(prompts, 1)[0]
+    prefixes = word_prefixes(text)
+    branch = args.beam // args.keep
+    print(f"    {text!r}  {len(prefixes)} words  beam {args.beam}  keep {args.keep}",
+          flush=True)
+    survivors = None
+    for stage, prefix in enumerate(prefixes):
+        if stage == 0:
+            states = None
+            parents = [None] * args.beam
+            histories = [[] for _ in range(args.beam)]
+        else:
+            states = []
+            parents = []
+            histories = []
+            for survivor in survivors:
+                for _ in range(branch):
+                    states.append(survivor["state"])
+                    parents.append(survivor["seq"])
+                    histories.append(list(survivor["history"]))
+        temperatures = draw_temperatures(args.beam, args.temp_min, args.temp_max)
+        print(f"    {prefix!r}  {args.beam} draws", flush=True)
+        sequences, new_states = sample_batch(
+            model, [prefix] * args.beam, stoi, device,
+            temperature=temperatures, window_sharpen=args.sharpen,
+            states=states, return_state=True,
+        )
+        full = []
+        for index, seq in enumerate(sequences):
+            if parents[index] is None:
+                full.append(seq)
+            else:
+                full.append(torch.cat([parents[index], seq], dim=0))
+            print(f"      draw {index + 1}/{args.beam}  temp {temperatures[index]:.2f}"
+                  f"  +{seq.shape[0]}  ({full[-1].shape[0]} steps)", flush=True)
+        update_no = None
+        if counter is not None:
+            counter[0] += 1
+            update_no = counter[0]
         if log is not None:
-            log.write({
-                "type": "draw",
-                "update": update_no,
-                "block": block,
-                "text": text,
-                "draw": draw,
-                "k": args.k,
-                "temperature": temp,
-                "steps": int(seq.shape[0]),
-            })
-    images = strokes_to_images([item["seq"] for item in rollouts], std)
-    refs = [item["text"] for item in rollouts]
-    rewards, cers, hyps = scorer.score(images, refs)
-    bends = [line_straightness(item["seq"], std) for item in rollouts]
-    if args.straightness > 0:
-        rewards = [
-            float(reward) - args.straightness * bend
-            for reward, bend in zip(rewards, bends)
+            for index, seq in enumerate(full):
+                log.write({
+                    "type": "draw",
+                    "update": update_no,
+                    "block": block,
+                    "text": prefix,
+                    "draw": index + 1,
+                    "k": args.beam,
+                    "temperature": temperatures[index],
+                    "steps": int(seq.shape[0]),
+                })
+        images = strokes_to_images(full, std)
+        refs = [prefix] * args.beam
+        rewards, cers, hyps = scorer.score(images, refs)
+        wcors = _wcer_list(scorer, len(hyps))
+        bends = [line_straightness(seq, std) for seq in full]
+        if args.straightness > 0:
+            rewards = [
+                float(reward) - args.straightness * bend
+                for reward, bend in zip(rewards, bends)
+            ]
+        group = args.beam if stage == 0 else branch
+        advs, ema = advantages(rewards, group, ema)
+        rollouts = []
+        for index, seq in enumerate(sequences):
+            item = {"text": prefix, "seq": seq, "temperature": temperatures[index]}
+            if states is not None:
+                # Pen state from sampling, and earlier words under the texts
+                # they were actually written with. The new strokes stay out of
+                # history so the anchor can replay up to this word.
+                item["state"] = states[index]
+                item["history"] = histories[index]
+            rollouts.append(item)
+        stats = reinforce_step(
+            model, ref, rollouts, advs, stoi, device,
+            args.temperature, args.sharpen, args.kl, optimizer, args.clip,
+        )
+        image_names = []
+        sheet_path = None
+        if out_dir is not None and args.sample_every > 0 and update_no is not None:
+            if update_no % args.sample_every == 0:
+                sheet_path = out_dir / f"gen-{update_no:06d}.png"
+        if sheet_path is not None:
+            image_names = save_sample_images(images, sheet_path.parent, update_no)
+        draws = pack_draws(
+            refs,
+            [int(seq.shape[0]) for seq in full],
+            rewards, cers, hyps, advs, stats.get("traces"),
+            wcors,
+            getattr(scorer, "last_confidence", None),
+            temperatures,
+            image_names,
+            bends,
+        )
+        kept = select_top(rewards, args.keep)
+        print("    keep " + ", ".join(f"{rewards[i]:.3f}" for i in kept), flush=True)
+        survivors = [
+            {
+                "seq": full[i],
+                "state": new_states[i],
+                "history": list(histories[i]) + [(prefix, sequences[i])],
+            }
+            for i in kept
         ]
-    wcors = _wcer_list(scorer, len(hyps))
-    confs = getattr(scorer, "last_confidence", None)
-    advs, ema = advantages(rewards, args.k, ema)
-    stats = reinforce_step(
-        model, ref, rollouts, advs, stoi, device,
-        args.temperature, args.sharpen, args.kl, optimizer, args.clip,
-    )
-    image_names = []
-    if sheet_path is not None:
-        image_names = save_sample_images(images, sheet_path.parent, update_no)
-    draws = pack_draws(
-        refs,
-        [int(item["seq"].shape[0]) for item in rollouts],
-        rewards, cers, hyps, advs, stats.get("traces"), wcors, confs,
-        [item["temperature"] for item in rollouts],
-        image_names,
-        bends,
-    )
-    sheet_name = image_names[0] if image_names else None
-    return stats, rewards, cers, hyps, refs, ema, draws, wcors, sheet_name
+        sheet_name = image_names[0] if image_names else None
+        yield stats, rewards, cers, hyps, refs, ema, draws, wcors, sheet_name
 
 
 def write_review(model, scorer, text, stoi, std, device, args, index, out_dir):
@@ -432,6 +502,8 @@ def main():
         raise SystemExit("--straightness must be >= 0")
     if args.k < 1 or args.batch < 1:
         raise SystemExit("--k and --batch must be >= 1")
+    if args.beam < 2 or args.keep < 1 or args.beam % args.keep != 0:
+        raise SystemExit("--beam must be at least 2 and a multiple of --keep")
     if args.review_k < 1:
         raise SystemExit("--review-k must be >= 1")
     if args.block_minutes <= 0:
@@ -557,6 +629,8 @@ def main():
             "straightness": args.straightness,
             "batch": args.batch,
             "k": args.k,
+            "beam": args.beam,
+            "keep": args.keep,
             "temperature_min": args.temp_min,
             "temperature_max": args.temp_max,
             "temperature_distribution": "normal",
@@ -581,67 +655,69 @@ def main():
                 started = time.monotonic()
                 block_updates = 0
                 while True:
-                    upcoming = updates + 1
-                    sheet_path = None
-                    if args.sample_every > 0 and upcoming % args.sample_every == 0:
-                        sheet_path = out_dir / f"gen-{upcoming:06d}.png"
-                    stats, rewards, cers, hyps, refs, ema, draws, wcors, sheet_name = one_update(
+                    counter = [updates]
+                    stop_block = False
+                    for stats, rewards, cers, hyps, refs, ema, draws, wcors, sheet_name in beam_stages(
                         model, ref, scorer, optimizer, prompts, stoi, std, device, args, ema,
-                        log=log, update_no=upcoming, block=index, sheet_path=sheet_path)
-                    if sheet_name:
-                        print(f"  samples {sheet_name}", flush=True)
-                    updates += 1
-                    block_updates += 1
-                    elapsed = (time.monotonic() - started) / 60.0
-                    reward_mean = sum(rewards) / len(rewards)
-                    cer_mean = sum(cers) / len(cers)
-                    present = [value for value in wcors if value is not None]
-                    wcer_mean = sum(present) / len(present) if present else None
-                    thin, hyp_len = _text_stats(hyps)
-                    confs = [item.get("confidence") for item in draws]
-                    confs = [value for value in confs if value is not None]
-                    conf_mean = sum(confs) / len(confs) if confs else None
-                    wcer_bit = "" if wcer_mean is None else f"wcer {wcer_mean:.3f}  "
-                    conf_bit = "" if conf_mean is None else f"conf {conf_mean:.2f}  "
-                    print(f"  update {updates}  {elapsed:.1f} min  "
-                          f"reward {reward_mean:.3f}  "
-                          f"cer {cer_mean:.3f}  "
-                          f"{wcer_bit}"
-                          f"{conf_bit}"
-                          f"kl {stats['kl']:.4f}  "
-                          f"loss {stats['loss']:.4f}  grad {stats['grad']:.3f}  "
-                          f"{refs[0]!r} -> {short(hyps[0])!r}",
-                          flush=True)
-                    log.write({
-                        "type": "update",
-                        "update": updates,
-                        "block": index,
-                        "elapsed_min": elapsed,
-                        "reward_mean": reward_mean,
-                        "reward_min": min(rewards),
-                        "reward_max": max(rewards),
-                        "cer_mean": cer_mean,
-                        "cer_min": min(cers),
-                        "cer_max": max(cers),
-                        "wcer_mean": wcer_mean,
-                        "confidence_mean": conf_mean,
-                        "wcer_min": min(present) if present else None,
-                        "wcer_max": max(present) if present else None,
-                        "hyp_len_mean": hyp_len,
-                        "thin_rate": thin,
-                        "kl": stats["kl"],
-                        "loss": stats["loss"],
-                        "grad": stats["grad"],
-                        "used": stats["used"],
-                        "stepped": stats["stepped"],
-                        "steps_mean": (
-                            sum(item["steps"] for item in draws) / len(draws) if draws else None
-                        ),
-                        "example": {"text": refs[0], "hyp": hyps[0]},
-                        "sheet": sheet_name,
-                        "draws": draws,
-                    })
-                    if elapsed * 60.0 >= args.block_minutes * 60.0:
+                        log=log, block=index, out_dir=out_dir, counter=counter,
+                    ):
+                        updates = counter[0]
+                        block_updates += 1
+                        if sheet_name:
+                            print(f"  samples {sheet_name}", flush=True)
+                        elapsed = (time.monotonic() - started) / 60.0
+                        reward_mean = sum(rewards) / len(rewards)
+                        cer_mean = sum(cers) / len(cers)
+                        present = [value for value in wcors if value is not None]
+                        wcer_mean = sum(present) / len(present) if present else None
+                        thin, hyp_len = _text_stats(hyps)
+                        confs = [item.get("confidence") for item in draws]
+                        confs = [value for value in confs if value is not None]
+                        conf_mean = sum(confs) / len(confs) if confs else None
+                        wcer_bit = "" if wcer_mean is None else f"wcer {wcer_mean:.3f}  "
+                        conf_bit = "" if conf_mean is None else f"conf {conf_mean:.2f}  "
+                        print(f"  update {updates}  {elapsed:.1f} min  "
+                              f"reward {reward_mean:.3f}  "
+                              f"cer {cer_mean:.3f}  "
+                              f"{wcer_bit}"
+                              f"{conf_bit}"
+                              f"kl {stats['kl']:.4f}  "
+                              f"loss {stats['loss']:.4f}  grad {stats['grad']:.3f}  "
+                              f"{refs[0]!r} -> {short(hyps[0])!r}",
+                              flush=True)
+                        log.write({
+                            "type": "update",
+                            "update": updates,
+                            "block": index,
+                            "elapsed_min": elapsed,
+                            "reward_mean": reward_mean,
+                            "reward_min": min(rewards),
+                            "reward_max": max(rewards),
+                            "cer_mean": cer_mean,
+                            "cer_min": min(cers),
+                            "cer_max": max(cers),
+                            "wcer_mean": wcer_mean,
+                            "confidence_mean": conf_mean,
+                            "wcer_min": min(present) if present else None,
+                            "wcer_max": max(present) if present else None,
+                            "hyp_len_mean": hyp_len,
+                            "thin_rate": thin,
+                            "kl": stats["kl"],
+                            "loss": stats["loss"],
+                            "grad": stats["grad"],
+                            "used": stats["used"],
+                            "stepped": stats["stepped"],
+                            "steps_mean": (
+                                sum(item["steps"] for item in draws) / len(draws) if draws else None
+                            ),
+                            "example": {"text": refs[0], "hyp": hyps[0]},
+                            "sheet": sheet_name,
+                            "draws": draws,
+                        })
+                        if elapsed * 60.0 >= args.block_minutes * 60.0:
+                            stop_block = True
+                            break
+                    if stop_block:
                         break
 
                 # Weights first, so a failure while drawing the sheet keeps the block.

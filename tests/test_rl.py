@@ -27,14 +27,18 @@ from rl import (
     choice_sheet,
     consistency_sheet,
     group_advantages,
+    history_state,
     load_policy_and_ref,
+    logprobs_from_states,
     refuse_overwrite_base,
     reinforce_step,
     reward_from_cer,
+    select_top,
     step_logprob,
     strokes_to_image,
     trajectory_logprob,
     trajectory_logprobs,
+    word_prefixes,
     draw_temperatures,
     reinforce_loss,
 )
@@ -527,6 +531,215 @@ class BaseModelTests(unittest.TestCase):
         self.assertTrue(math.isfinite(stats["loss"]))
         self.assertTrue(math.isfinite(stats["kl"]))
         self.assertGreater(float((model.fc.weight.detach() - before).abs().sum()), 0.0)
+
+
+def _pen_seq(rows):
+    seq = torch.randn(rows, 3)
+    seq[:, 2] = (seq[:, 2] > 0).float()
+    return seq
+
+
+class BeamTests(unittest.TestCase):
+    def test_prefixes_keep_every_word_written_so_far(self):
+        self.assertEqual(
+            word_prefixes("john is a handsome man"),
+            ["john", "john is", "john is a", "john is a handsome", "john is a handsome man"],
+        )
+        self.assertEqual(word_prefixes("hello, world"), ["hello,", "hello, world"])
+        with self.assertRaises(ValueError):
+            word_prefixes("   ")
+
+    def test_select_top_breaks_ties_toward_the_earlier_index(self):
+        self.assertEqual(select_top([0.2, 0.9, 0.9, 0.1], 2), [1, 2])
+
+    def test_split_logprob_matches_one_replay_of_the_same_text(self):
+        torch.manual_seed(0)
+        model = HandwritingModel(vocab_size=2, hidden_size=16).eval()
+        stoi = {"a": 0, "b": 1}
+        text = "ab"
+        full = _pen_seq(8)
+        prefix, new = full[:3], full[3:]
+        lp_prefix, n_prefix = trajectory_logprobs(
+            model, [prefix], [text], stoi, "cpu", 1.0, 1.0)
+        state = history_state(model, [(text, prefix)], stoi, "cpu", 1.0)
+        lp_new, n_new = logprobs_from_states(
+            model, [state], [new], [text], stoi, "cpu", 1.0, 1.0)
+        lp_full, n_full = trajectory_logprobs(
+            model, [full], [text], stoi, "cpu", 1.0, 1.0)
+        self.assertEqual(int(n_prefix + n_new), int(n_full))
+        self.assertTrue(torch.allclose(lp_prefix + lp_new, lp_full, rtol=1e-4, atol=1e-4))
+
+        a, b, c = full[:3], full[3:5], full[5:]
+        lp_a, _ = trajectory_logprobs(model, [a], [text], stoi, "cpu", 1.0, 1.0)
+        state_a = history_state(model, [(text, a)], stoi, "cpu", 1.0)
+        lp_b, _ = logprobs_from_states(model, [state_a], [b], [text], stoi, "cpu", 1.0, 1.0)
+        state_ab = history_state(model, [(text, a), (text, b)], stoi, "cpu", 1.0)
+        lp_c, _ = logprobs_from_states(model, [state_ab], [c], [text], stoi, "cpu", 1.0, 1.0)
+        self.assertTrue(torch.allclose(lp_a + lp_b + lp_c, lp_full, rtol=1e-4, atol=1e-4))
+
+        # A later word is conditioned on the longer string. Replaying the whole
+        # stroke under only that longer string is a different density.
+        short, longer = "a", "ab"
+        head, tail = full[:4], full[4:]
+        lp_head, _ = trajectory_logprobs(model, [head], [short], stoi, "cpu", 1.0, 1.0)
+        carried = history_state(model, [(short, head)], stoi, "cpu", 1.0)
+        lp_tail, _ = logprobs_from_states(
+            model, [carried], [tail], [longer], stoi, "cpu", 1.0, 1.0)
+        lp_longer, _ = trajectory_logprobs(model, [full], [longer], stoi, "cpu", 1.0, 1.0)
+        self.assertFalse(torch.allclose(lp_head + lp_tail, lp_longer, rtol=1e-4, atol=1e-3))
+
+    def test_continued_rollout_uses_the_saved_pen_state(self):
+        torch.manual_seed(1)
+        model = HandwritingModel(vocab_size=2, hidden_size=16)
+        ref = HandwritingModel(vocab_size=2, hidden_size=16)
+        ref.load_state_dict(model.state_dict())
+        for param in ref.parameters():
+            param.requires_grad_(False)
+        stoi = {"a": 0, "b": 1}
+        text = "ab"
+        prefix = _pen_seq(4)
+        new = _pen_seq(4)
+        state = history_state(model, [(text, prefix)], stoi, "cpu", 1.0)
+        expected, _ = logprobs_from_states(
+            model, [state], [new], [text], stoi, "cpu", 1.0, 1.0)
+        from_scratch, _ = trajectory_logprobs(
+            model, [new], [text], stoi, "cpu", 1.0, 1.0)
+        optimizer = torch.optim.Adam(model.parameters(), lr=1e-5)
+        stats = reinforce_step(
+            model, ref,
+            [{
+                "text": text,
+                "seq": new,
+                "temperature": 1.0,
+                "state": state,
+                "history": [(text, prefix)],
+            }],
+            [1.0], stoi, "cpu", 1.0, 1.0, 0.1, optimizer, 1.0,
+        )
+        got = torch.tensor(stats["traces"][0]["logp"])
+        self.assertTrue(torch.allclose(got, expected, rtol=1e-4, atol=1e-4))
+        self.assertFalse(torch.allclose(got, from_scratch, rtol=1e-3, atol=1e-3))
+        self.assertTrue(math.isfinite(stats["kl"]))
+
+    def test_sample_batch_resumes_and_returns_only_the_new_points(self):
+        torch.manual_seed(0)
+        model = HandwritingModel(vocab_size=4, hidden_size=16).eval()
+        stoi = {ch: i for i, ch in enumerate("abcd")}
+        seqs, states = sample_batch(
+            model, ["ab"], stoi, "cpu", temperature=1.0,
+            max_steps=5, min_steps=2, tail_steps=1, steps_per_char=2,
+            window_sharpen=1.0, return_state=True,
+        )
+        self.assertGreaterEqual(seqs[0].shape[0], 1)
+        self.assertEqual(states[0]["x"].shape, (3,))
+        more = sample_batch(
+            model, ["abcd"], stoi, "cpu", temperature=1.0,
+            max_steps=4, min_steps=2, tail_steps=1, steps_per_char=2,
+            window_sharpen=1.0, states=states,
+        )
+        self.assertGreaterEqual(more[0].shape[0], 1)
+        self.assertEqual(more[0].shape[1], 3)
+
+    def test_each_stage_scores_the_prefix_and_carries_its_history(self):
+        import generate
+        import train_rl
+        from types import SimpleNamespace
+
+        calls = []
+
+        def fake_sample(model, texts, stoi, device, temperature=1.0, states=None,
+                        return_state=False, window_sharpen=2.0):
+            self.assertEqual(window_sharpen, 1.0)
+            self.assertTrue(return_state)
+            call = len(calls)
+            calls.append({"texts": list(texts), "states": states})
+            seqs = []
+            saved = []
+            for index in range(len(texts)):
+                seq = torch.zeros(4, 3)
+                seq[:, 0] = call * 100 + index
+                seq[-1, 2] = 1.0
+                seqs.append(seq)
+                saved.append({"id": (call, index), "x": seq[-1].clone()})
+            return seqs, saved
+
+        recorded = []
+
+        def fake_reinforce(model, ref, rollouts, advs, stoi, device, temperature,
+                           sharpen, kl_coef, optimizer, clip):
+            recorded.append(rollouts)
+            return {
+                "loss": 0.0,
+                "kl": 0.0,
+                "used": len(rollouts),
+                "grad": 0.0,
+                "stepped": False,
+                "traces": [{} for _ in rollouts],
+            }
+
+        class Scorer:
+            def __init__(self):
+                self.refs = []
+                self.last_confidence = None
+
+            def score(self, images, refs):
+                self.refs.append(list(refs))
+                n = len(refs)
+                return [float(n - i) for i in range(n)], [0.0] * n, list(refs)
+
+        args = SimpleNamespace(
+            beam=9, keep=3, temp_min=0.5, temp_max=0.5, sharpen=1.0,
+            straightness=0.0, temperature=0.5, kl=0.0, clip=1.0, sample_every=0,
+        )
+        scorer = Scorer()
+        real_sample = generate.sample_batch
+        real_step = train_rl.reinforce_step
+        generate.sample_batch = fake_sample
+        train_rl.reinforce_step = fake_reinforce
+        try:
+            stages = list(train_rl.beam_stages(
+                None, None, scorer, None, ["john is a"],
+                {ch: i for i, ch in enumerate("john isa")},
+                1.0, "cpu", args, None,
+            ))
+        finally:
+            generate.sample_batch = real_sample
+            train_rl.reinforce_step = real_step
+
+        self.assertEqual(len(stages), 3)
+        self.assertEqual(scorer.refs, [
+            ["john"] * 9,
+            ["john is"] * 9,
+            ["john is a"] * 9,
+        ])
+        self.assertEqual([call["texts"] for call in calls], scorer.refs)
+        self.assertIsNone(calls[0]["states"])
+        self.assertEqual(
+            [item["id"] for item in calls[1]["states"]],
+            [(0, parent) for parent in range(3) for _ in range(3)],
+        )
+        self.assertEqual([item["text"] for item in recorded[0]], ["john"] * 9)
+        self.assertTrue(all("state" not in item for item in recorded[0]))
+
+        stage1 = recorded[1]
+        self.assertEqual([item["text"] for item in stage1], ["john is"] * 9)
+        for parent in range(3):
+            for item in stage1[parent * 3:(parent + 1) * 3]:
+                self.assertEqual(item["state"]["id"], (0, parent))
+                self.assertEqual(len(item["history"]), 1)
+                self.assertEqual(item["history"][0][0], "john")
+                self.assertEqual(item["seq"].shape[0], 4)
+                self.assertEqual(float(item["history"][0][1][0, 0]), parent)
+
+        # The top three of stage 1 are the first parent's three continuations.
+        for child, mark in enumerate((100.0, 101.0, 102.0)):
+            for item in recorded[2][child * 3:(child + 1) * 3]:
+                self.assertEqual(item["text"], "john is a")
+                self.assertEqual(item["state"]["id"], (1, child))
+                self.assertEqual([past[0] for past in item["history"]], ["john", "john is"])
+                self.assertEqual(float(item["history"][0][1][0, 0]), 0.0)
+                self.assertEqual(float(item["history"][1][1][0, 0]), mark)
+                self.assertEqual(item["seq"].shape[0], 4)
 
 
 if __name__ == "__main__":
