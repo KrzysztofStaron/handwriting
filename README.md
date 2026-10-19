@@ -132,11 +132,11 @@ uv run export_weights.py
 
 Both stages keep `models/best-4.pth` as a frozen KL anchor and never write that file. The update is sequence-level REINFORCE on the stroke log-probability: length-normalized, with a per-prompt baseline, and a KL penalty back toward the base model. `train_rl.py` starts from `models/rl-trocr.pth` when that file exists, and from the base model otherwise.
 
-**Recognizer reward.** TrOCR-Large reads a rendering of each sample. The default score has four parts: plain CER, the visual distance in `docs/vcer.md`, TrOCR confidence, and straightness, then a small penalty when the gaps between words are uneven. Plain CER is 60% of the score and vCER is 20%, so a lookalike costs less than a full edit and a real edit still costs more. There is no exact-match bonus. `--reward vcer` is the visual distance alone. `--reward cer` is plain CER alone. Those two still keep their exact-match term, then the same confidence, straightness, and spacing.
+**Recognizer reward.** TrOCR-Large reads a rendering of each sample. The default score has four parts: plain CER, the visual distance in `docs/vcer.md`, TrOCR confidence, and straightness. Plain CER is 60% of the score and vCER is 20%, so a lookalike costs less than a full edit and a real edit still costs more. There is no exact-match bonus. `--reward vcer` is the visual distance alone. `--reward cer` is plain CER alone. Those two still keep their exact-match term, then the same confidence and straightness. Word spacing is logged and is not part of the score.
 
 | `--reward` | value |
 |---|---|
-| `both` (default) | `0.6 * (1 - min(CER, 1)) + 0.2 * (1 - min(wCER, 1)) + 0.2 * confidence - 0.05 * straightness - 0.05 * spacing`. Confidence never subtracts. `--confidence` is 0.2. `--straightness` and `--spacing` are 0.05. |
+| `both` (default) | `0.6 * (1 - min(CER, 1)) + 0.2 * (1 - min(wCER, 1)) + 0.2 * confidence - 0.05 * straightness`. Confidence never subtracts. `--confidence` is 0.2 and `--straightness` is 0.05. |
 | `vcer` | `0.8 * (1 - min(wCER, 1)) + 0.2 * exact`, then the same confidence and straightness. |
 | `cer` | `0.8 * (1 - min(CER, 1)) + 0.2 * exact`, then the same confidence and straightness. |
 | `exp` | `exp(-CER)`, in (0, 1] |
@@ -145,7 +145,7 @@ Both stages keep `models/best-4.pth` as a frozen KL anchor and never write that 
 
 A crooked line then loses a little more. The left quarter and the right quarter of the ink each have a band from the 10th to the 90th percentile. The score is how far the right band has moved from the left band, divided by the letter height, and the middle is compared with the ends the same way. A level line loses nothing. `--straightness` (default 0.05) is the most that penalty can subtract.
 
-Uneven gaps between words lose a little more on top of that. The text says how many word gaps there are, and those are the widest blanks between pen strokes. A gap inside a word is smaller and does not count. The penalty is the squared distance of those widths from their middle width, so a small wobble is almost free and a mix of tiny and huge gaps costs. `--spacing` (default 0.05) is the most that can subtract.
+Word spacing is measured and shown in the sample table. It does not change the reward. `--spacing` defaults to 0.
 
 Prompts default to `data/romeo_juliet.txt`, the whole play cut into lines of at most 48 characters and sampled at random. `--prompts data/sentences.txt` is the IAM pool. `--max-chars` defaults to 48 so TrOCR's square resize does not squash the line. On `--novel` of draws (default 0.25) the line is ten random words of at most 4 letters or digits from the model alphabet, such as `y142 OX7V Fz1M wsaY W5OF M3VV 8Zab c12d eF3g h4`. On `--words` of draws (default 0.25) the line is random lowercase dictionary words with no punctuation, filled until another word would pass `--max-chars`, so it is no longer than a play line. The rest of the draws stay on the file. `--novel 0` and `--words 0` turn each mix off. `--text` stays on that one sentence.
 

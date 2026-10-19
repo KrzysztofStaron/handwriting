@@ -103,7 +103,7 @@ def parse_args(argv=None):
                              "Capitals, digits, and punctuation are dropped.")
     parser.add_argument("--reward", choices=("both", "vcer", "cer", "exp", "linear", "soft"), default="both",
                         help="both: 60% plain CER and 20% visual CER (default), then "
-                             "20% confidence. Straightness and word-spacing are subtracted. "
+                             "20% confidence. Straightness is subtracted. "
                              "vcer: visual distance only. cer: plain CER only. "
                              "exp: exp(-CER). linear: 1-CER. "
                              "soft: 1 at or below --tau, then linear to 0 at CER=1.")
@@ -122,11 +122,10 @@ def parse_args(argv=None):
                              "compared with the ink band on the left, each from the 10th "
                              "to the 90th percentile. A level line loses nothing. "
                              "0 turns the penalty off.")
-    parser.add_argument("--spacing", type=float, default=0.05,
-                        help="Most uneven word spacing can lose. The widths of the gaps "
-                             "between words are compared with their middle width. A small "
-                             "wobble barely counts; a mix of tiny and huge gaps can lose "
-                             "this much. 0 turns the penalty off.")
+    parser.add_argument("--spacing", type=float, default=0.0,
+                        help="Off by default, so word spacing does not change the reward. "
+                             "A positive value subtracts at most this much when the gaps "
+                             "between words are uneven. The measurement is still logged.")
     parser.add_argument("--tau", type=float, default=0.1,
                         help="CER forgiven outright by --reward soft.")
     parser.add_argument("--reward-model", default="microsoft/trocr-large-handwritten")
