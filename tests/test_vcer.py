@@ -261,6 +261,13 @@ class RewardTests(unittest.TestCase):
         self.assertAlmostEqual(subs[0]["cost"], 0.25)
         self.assertAlmostEqual(looked["wcer"], 0.25)
         self.assertGreater(looked["cer"], looked["wcer"])
+        ink = explain_pair("c", "e")
+        ink_sub = [op for op in ink["ops"] if op["op"] == "sub"]
+        self.assertEqual(
+            ink_sub[0]["why"],
+            "hand list said 0.35, ink overlap pulled it to 0.3475",
+        )
+        self.assertAlmostEqual(ink_sub[0]["cost"], 0.3475)
         same = explain_pair("hello: world", "hello : world")
         self.assertTrue(same["exact"])
         self.assertEqual([op for op in same["ops"] if op["op"] != "eq"], [])

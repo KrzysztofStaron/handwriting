@@ -72,24 +72,31 @@ def rule_report(table_path=None, seed_path=None):
     }
 
 
+def _cost_text(value):
+    return f"{float(value):.4f}".rstrip("0").rstrip(".")
+
+
 def _why(op, table, hand):
     kind = op["op"]
     if kind == "eq":
         return "same characters", "same"
     if kind == "ins":
-        return f"any insertion costs {table.ins_cost(''):.2f}", "indel"
+        return f"any insertion costs {_cost_text(table.ins_cost(''))}", "indel"
     if kind == "del":
-        return f"any deletion costs {table.del_cost(''):.2f}", "indel"
+        return f"any deletion costs {_cost_text(table.del_cost(''))}", "indel"
     src, dst = op["ref"], op["hyp"]
     listed = table.sub.get((src, dst))
     if listed is not None and abs(listed - op["cost"]) <= 1e-6:
         origin, seed = _origin(src, dst, listed, hand)
         if origin == "hand+render":
-            return f"hand list said {seed:.2f}, ink overlap pulled it to {listed:.2f}", origin
+            return (
+                f"hand list said {_cost_text(seed)}, "
+                f"ink overlap pulled it to {_cost_text(listed)}"
+            ), origin
         if origin == "hand":
             return "hand list", origin
         if origin == "floor":
-            return f"ink overlap, held at the {RENDER_ONLY_FLOOR:.2f} floor", origin
+            return f"ink overlap, held at the {_cost_text(RENDER_ONLY_FLOOR)} floor", origin
         return "ink overlap", origin
     if src.casefold() == dst.casefold() and abs(op["cost"] - table.case_cost) <= 1e-6:
         return "same letters, different case, no listed pair", "case"

@@ -47,7 +47,7 @@
     padding: 6px 8px;
   }
   button { cursor: pointer; background: var(--ink); color: var(--paper); border-color: var(--ink); }
-  .presets { display: flex; gap: 8px; margin-top: 8px; }
+  .presets { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 8px; }
   .presets button { background: transparent; color: var(--ink); }
   .result { margin-top: 10px; padding: 12px; }
   .result p { margin: 0 0 8px; }
@@ -82,8 +82,12 @@
   </form>
   <div class="presets">
     <button type="button" data-ref="d" data-hyp="ol">d → ol</button>
+    <button type="button" data-ref="d" data-hyp="e">d → e</button>
+    <button type="button" data-ref="c" data-hyp="e">c → e</button>
+    <button type="button" data-ref="I" data-hyp="l">I → l</button>
+    <button type="button" data-ref="a" data-hyp="x">a → x</button>
     <button type="button" data-ref="5" data-hyp="S">5 → S</button>
-    <button type="button" data-ref="!" data-hyp="(">! → (</button>
+    <button type="button" data-ref="o" data-hyp="O">o → O</button>
     <button type="button" data-ref="hello: world" data-hyp="hello : world">space before :</button>
   </div>
   <div id="result" class="result" hidden></div>
@@ -114,7 +118,7 @@ function show(text) {
 }
 
 function money(value) {
-  return Number(value).toFixed(2);
+  return Number(value).toFixed(4).replace(/0+$/, "").replace(/\.$/, "");
 }
 
 function originLabel(rule) {
@@ -195,10 +199,10 @@ async function score(ref, hyp) {
   box.replaceChildren();
   const head = document.createElement("p");
   head.className = "nums";
-  head.textContent = "reward " + data.reward.toFixed(3)
-    + "   wCER " + data.wcer.toFixed(3)
-    + "   CER " + data.cer.toFixed(3)
-    + "   distance " + data.distance.toFixed(3)
+  head.textContent = "cost " + money(data.distance)
+    + "   visual reward " + money(data.reward)
+    + "   wCER " + money(data.wcer)
+    + "   CER " + money(data.cer)
     + (data.exact ? "   exact" : "");
   box.appendChild(head);
   const norm = document.createElement("p");
