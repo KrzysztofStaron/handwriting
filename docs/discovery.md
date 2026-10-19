@@ -8,4 +8,4 @@ A rollout is 4 prompts times 2 draws, so 8 reward calls. An update in the curren
 
 `models/best-4.pth` is the supervised baseline, and TrOCR-Large is the reader. A confusion harvest would run that reader over a held-out split. The recognizer run already has TrOCR loaded on MPS, so that harvest is not done in this pass. The cost table is the hand seed plus glyph images rendered from Bradley Hand and Marker Felt. The hand-seed entries are an upper bound, and a pair that is only in the render table cannot cost less than 0.55, so a font similarity cannot undercut a curated confusion such as `d -> ol`.
 
-Romeo and Juliet is not in the IAM lines. `data/romeo_juliet.txt` is the whole play, cut into 8–32 character pieces on word boundaries, and the trainer samples that file at random.
+Romeo and Juliet is not in the IAM lines. `data/romeo_juliet.txt` is the whole play, cut into lines of at most 48 characters, and the trainer samples that file at random. `--max-chars` is 48 so TrOCR's square resize does not squash the line.

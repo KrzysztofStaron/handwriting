@@ -1,9 +1,11 @@
 """Cut the whole of Romeo and Juliet into trainer prompts.
 
 The Gutenberg header and footer stay out. Characters outside the 77-character
-alphabet become spaces. Lines are 8–32 characters, split on words. Repeated
-lines are kept once, in first-seen order. The trainer then samples the file
-at random.
+alphabet become spaces. Each prompt is at most 48 characters, split on words,
+so the line still fits TrOCR's square input. A leftover shorter than 8
+characters is folded into the previous line when that stays within 48.
+Repeated lines are kept once, in first-seen order. The trainer then samples
+the file at random.
 """
 
 import json
@@ -41,7 +43,7 @@ def to_alphabet(text, alphabet):
     return "".join(chars)
 
 
-def chunk(text, min_chars=8, max_chars=32):
+def chunk(text, min_chars=8, max_chars=48):
     lines = []
     buf = ""
     for word in text.split():
@@ -59,6 +61,8 @@ def chunk(text, min_chars=8, max_chars=32):
             buf = word
     if len(buf) >= min_chars:
         lines.append(buf)
+    elif buf and lines and len(lines[-1]) + 1 + len(buf) <= max_chars:
+        lines[-1] = lines[-1] + " " + buf
     seen = set()
     unique = []
     for line in lines:
@@ -77,7 +81,10 @@ def main():
     text = to_alphabet(play_body(raw), alphabet)
     all_lines, unique = chunk(text)
     OUT.write_text("\n".join(unique) + "\n", encoding="utf-8")
+    words = [len(line.split()) for line in unique]
+    chars = [len(line) for line in unique]
     print(f"chunks {len(all_lines)}  unique {len(unique)}  -> {OUT}")
+    print(f"words {min(words)}-{max(words)}  chars {min(chars)}-{max(chars)}")
     print("sample:", unique[0])
     print("sample:", unique[len(unique) // 2])
     print("sample:", unique[-1])
