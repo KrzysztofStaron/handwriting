@@ -37,7 +37,7 @@ uv run python -m vcer.table_build.build
 
 ## Trainer
 
-`train_rl.py` defaults to `--reward both`. That score is half plain CER and half this visual distance, then confidence is added and straightness is subtracted. `--reward vcer` uses the visual distance alone, plus an exact-match term. `--reward cer` is plain CER and does not load this table. `--reward exp` is `exp(-CER)`.
+`train_rl.py` defaults to `--reward both`. That score is 60% plain CER and 20% this visual distance, then 20% confidence, and straightness is subtracted. `--reward vcer` uses the visual distance alone, plus an exact-match term. `--reward cer` is plain CER and does not load this table. `--reward exp` is `exp(-CER)`.
 
 | flag | default | meaning |
 |---|---|---|

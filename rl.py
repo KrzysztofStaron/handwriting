@@ -154,16 +154,17 @@ def string_reward(reference, hypothesis, alpha=0.8):
 
 
 def blend_string_reward(cer_value, wcer_value):
-    """Plain CER and visual CER, equal shares. No exact-match bonus.
+    """Plain CER takes three quarters of the string score, visual CER one quarter.
 
-    `0.5 * (1 - min(CER, 1)) + 0.5 * (1 - min(wCER, 1))`.
-    Confidence then takes its share of this, and straightness is subtracted.
+    `0.75 * (1 - min(CER, 1)) + 0.25 * (1 - min(wCER, 1))`.
+    Confidence then keeps 80% of this and adds itself at 0.2, so the full
+    score is 60% CER, 20% vCER, and 20% confidence. Straightness is subtracted.
     A distance above 1 is capped, so a long hypothesis cannot push either
     term below zero.
     """
     cer_c = min(max(float(cer_value), 0.0), 1.0)
     wcer_c = min(max(float(wcer_value), 0.0), 1.0)
-    return 0.5 * (1.0 - cer_c) + 0.5 * (1.0 - wcer_c)
+    return 0.75 * (1.0 - cer_c) + 0.25 * (1.0 - wcer_c)
 
 
 def reward_from_cer(value, kind="exp", tau=0.1):

@@ -306,7 +306,7 @@ class PromptAndTrainerTests(unittest.TestCase):
         self.assertLess(mixed, pure)
         self.assertAlmostEqual(
             mixed,
-            0.5 * (1.0 - min(diag["cer"], 1.0)) + 0.5 * (1.0 - min(diag["wcer"], 1.0)),
+            0.75 * (1.0 - min(diag["cer"], 1.0)) + 0.25 * (1.0 - min(diag["wcer"], 1.0)),
         )
         self.assertEqual(args.prompts, "data/romeo_juliet.txt")
         self.assertEqual(args.max_chars, 48)

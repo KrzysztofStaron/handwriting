@@ -101,8 +101,8 @@ def parse_args(argv=None):
                         help="Word list for --words. One word per line. "
                              "Capitals, digits, and punctuation are dropped.")
     parser.add_argument("--reward", choices=("both", "vcer", "cer", "exp", "linear", "soft"), default="both",
-                        help="both: equal plain CER and visual CER (default), then "
-                             "confidence is added and straightness is subtracted. "
+                        help="both: 60% plain CER and 20% visual CER (default), then "
+                             "20% confidence, and straightness is subtracted. "
                              "vcer: visual distance only. cer: plain CER only. "
                              "exp: exp(-CER). linear: 1-CER. "
                              "soft: 1 at or below --tau, then linear to 0 at CER=1.")
@@ -698,7 +698,7 @@ def main():
         )
         if scorer.vcer_config:
             cfg = scorer.vcer_config
-            share = "half plain CER, half vCER  " if args.reward == "both" else "vCER  "
+            share = "60% plain CER, 20% vCER  " if args.reward == "both" else "vCER  "
             print(f"{share}alpha {cfg['alpha']}  k {cfg['k']}  table {cfg['hash']}  "
                   f"confidence {args.confidence:g}  straightness {args.straightness:g}  "
                   f"prompts {args.prompts}", flush=True)
