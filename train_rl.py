@@ -6,7 +6,9 @@ ways. TrOCR scores the ink of everything written so far against those words
 plus the word just added. The gradient is applied only to the new strokes.
 The 10 samples at a checkpoint are only a review sheet of the full sentence.
 Some training lines are three random words from the model alphabet, so the
-policy also writes strings the play does not contain.
+policy also writes strings the play does not contain. One logged update is
+the whole line. Its reward, CER, KL, and length are the average of every
+drawing in that line.
 
 About every 10 minutes the loop writes a checkpoint and draws one fixed short
 sentence 10 times, so the sheets are comparable. Re-running with no arguments
@@ -270,8 +272,11 @@ def label_reward_order(refs, rewards):
     return sorted(range(len(refs)), key=key)
 
 
-def save_sample_images(images, directory, update_no, max_h=160):
-    """One preview PNG per drawing, named gen-NNNNNN-II.png, in sample order."""
+def save_sample_images(images, directory, update_no, max_h=160, stage=None):
+    """One preview PNG per drawing, in sample order.
+
+    `stage` keeps the words of one line from sharing a filename.
+    """
     from PIL import Image
 
     directory = Path(directory)
@@ -284,7 +289,10 @@ def save_sample_images(images, directory, update_no, max_h=160):
             scale = max_h / image.height
             preview = image.resize(
                 (max(1, int(image.width * scale)), max_h), resample)
-        name = f"gen-{update_no:06d}-{index:02d}.png"
+        if stage is None:
+            name = f"gen-{update_no:06d}-{index:02d}.png"
+        else:
+            name = f"gen-{update_no:06d}-{stage:02d}-{index:02d}.png"
         preview.save(directory / name)
         names.append(name)
     return names
@@ -309,14 +317,49 @@ def save_training_sheet(images, refs, hyps, cers, rewards, path, update_no):
     return path.name
 
 
+def summarize_line(word_stats):
+    """One update from the words of a line.
+
+    KL and loss are averaged over the drawings that entered the gradient.
+    The gradient norm is the mean of the word steps.
+    """
+    used = sum(int(item["used"]) for item in word_stats)
+
+    def weighted(key):
+        total = 0.0
+        weight = 0
+        for item in word_stats:
+            value = item[key]
+            count = int(item["used"])
+            if count and isinstance(value, (int, float)) and value == value:
+                total += float(value) * count
+                weight += count
+        if not weight:
+            return float("nan")
+        return total / weight
+
+    grads = [
+        float(item["grad"]) for item in word_stats
+        if isinstance(item["grad"], (int, float)) and item["grad"] == item["grad"]
+    ]
+    return {
+        "loss": weighted("loss"),
+        "kl": weighted("kl"),
+        "used": used,
+        "grad": sum(grads) / len(grads) if grads else float("nan"),
+        "stepped": any(item["stepped"] for item in word_stats),
+    }
+
+
 def beam_stages(model, ref, scorer, optimizer, prompts, stoi, std, device, args, ema,
                 log=None, block=None, out_dir=None, counter=None):
-    """Grow one prompt word by word. Yield one scored stage per word.
+    """Grow one prompt word by word. Yield one update for the whole line.
 
     The first stage draws `--beam` copies of the first word. Later stages keep
     the `--keep` best prefixes and continue each one `beam / keep` times.
     The picture is every stroke so far, and the target is every word so far,
     including the word just added. The gradient covers only the new strokes.
+    The logged update averages every drawing in the line.
     """
     from generate import sample_batch
 
@@ -328,6 +371,18 @@ def beam_stages(model, ref, scorer, optimizer, prompts, stoi, std, device, args,
     branch = args.beam // args.keep
     print(f"    {text!r}  {len(prefixes)} words  beam {args.beam}  keep {args.keep}",
           flush=True)
+    update_no = None
+    if counter is not None:
+        counter[0] += 1
+        update_no = counter[0]
+    save_pictures = (
+        out_dir is not None and args.sample_every > 0 and update_no is not None
+        and update_no % args.sample_every == 0
+    )
+    word_stats = []
+    all_rewards, all_cers, all_hyps, all_refs = [], [], [], []
+    all_draws, all_wcors = [], []
+    sheet_name = None
     survivors = None
     for stage, prefix in enumerate(prefixes):
         if stage == 0:
@@ -358,10 +413,6 @@ def beam_stages(model, ref, scorer, optimizer, prompts, stoi, std, device, args,
                 full.append(torch.cat([parents[index], seq], dim=0))
             print(f"      draw {index + 1}/{args.beam}  temp {temperatures[index]:.2f}"
                   f"  +{seq.shape[0]}  ({full[-1].shape[0]} steps)", flush=True)
-        update_no = None
-        if counter is not None:
-            counter[0] += 1
-            update_no = counter[0]
         if log is not None:
             for index, seq in enumerate(full):
                 log.write({
@@ -401,12 +452,11 @@ def beam_stages(model, ref, scorer, optimizer, prompts, stoi, std, device, args,
             args.temperature, args.sharpen, args.kl, optimizer, args.clip,
         )
         image_names = []
-        sheet_path = None
-        if out_dir is not None and args.sample_every > 0 and update_no is not None:
-            if update_no % args.sample_every == 0:
-                sheet_path = out_dir / f"gen-{update_no:06d}.png"
-        if sheet_path is not None:
-            image_names = save_sample_images(images, sheet_path.parent, update_no)
+        if save_pictures:
+            image_names = save_sample_images(
+                images, out_dir, update_no, stage=stage)
+            if sheet_name is None and image_names:
+                sheet_name = image_names[0]
         draws = pack_draws(
             refs,
             [int(seq.shape[0]) for seq in full],
@@ -427,8 +477,17 @@ def beam_stages(model, ref, scorer, optimizer, prompts, stoi, std, device, args,
             }
             for i in kept
         ]
-        sheet_name = image_names[0] if image_names else None
-        yield stats, rewards, cers, hyps, refs, ema, draws, wcors, sheet_name
+        word_stats.append(stats)
+        all_rewards.extend(rewards)
+        all_cers.extend(cers)
+        all_hyps.extend(hyps)
+        all_refs.extend(refs)
+        all_draws.extend(draws)
+        all_wcors.extend(wcors)
+    yield (
+        summarize_line(word_stats), all_rewards, all_cers, all_hyps, all_refs,
+        ema, all_draws, all_wcors, sheet_name,
+    )
 
 
 def write_review(model, scorer, text, stoi, std, device, args, index, out_dir):
@@ -692,6 +751,9 @@ def main():
                         conf_mean = sum(confs) / len(confs) if confs else None
                         wcer_bit = "" if wcer_mean is None else f"wcer {wcer_mean:.3f}  "
                         conf_bit = "" if conf_mean is None else f"conf {conf_mean:.2f}  "
+                        full_text = refs[-1]
+                        finished = [i for i, ref in enumerate(refs) if ref == full_text]
+                        best_i = max(finished, key=lambda i: rewards[i])
                         print(f"  update {updates}  {elapsed:.1f} min  "
                               f"reward {reward_mean:.3f}  "
                               f"cer {cer_mean:.3f}  "
@@ -699,7 +761,7 @@ def main():
                               f"{conf_bit}"
                               f"kl {stats['kl']:.4f}  "
                               f"loss {stats['loss']:.4f}  grad {stats['grad']:.3f}  "
-                              f"{refs[0]!r} -> {short(hyps[0])!r}",
+                              f"{full_text!r} -> {short(hyps[best_i])!r}",
                               flush=True)
                         log.write({
                             "type": "update",
@@ -726,7 +788,7 @@ def main():
                             "steps_mean": (
                                 sum(item["steps"] for item in draws) / len(draws) if draws else None
                             ),
-                            "example": {"text": refs[0], "hyp": hyps[0]},
+                            "example": {"text": full_text, "hyp": hyps[best_i]},
                             "sheet": sheet_name,
                             "draws": draws,
                         })

@@ -554,6 +554,18 @@ class BeamTests(unittest.TestCase):
     def test_select_top_breaks_ties_toward_the_earlier_index(self):
         self.assertEqual(select_top([0.2, 0.9, 0.9, 0.1], 2), [1, 2])
 
+    def test_a_line_averages_every_generation(self):
+        import train_rl
+        stats = train_rl.summarize_line([
+            {"loss": 1.0, "kl": 2.0, "used": 1, "grad": 0.5, "stepped": True},
+            {"loss": 3.0, "kl": 6.0, "used": 3, "grad": 1.5, "stepped": False},
+        ])
+        self.assertAlmostEqual(stats["loss"], 2.5)
+        self.assertAlmostEqual(stats["kl"], 5.0)
+        self.assertAlmostEqual(stats["grad"], 1.0)
+        self.assertEqual(stats["used"], 4)
+        self.assertTrue(stats["stepped"])
+
     def test_novel_line_is_three_words_from_the_alphabet(self):
         state = random.getstate()
         random.seed(0)
@@ -751,7 +763,10 @@ class BeamTests(unittest.TestCase):
             generate.sample_batch = real_sample
             train_rl.reinforce_step = real_step
 
-        self.assertEqual(len(stages), 3)
+        self.assertEqual(len(stages), 1)
+        self.assertEqual(len(recorded), 3)
+        self.assertEqual(stages[0][0]["used"], 27)
+        self.assertEqual(len(stages[0][1]), 27)
         self.assertEqual(scorer.refs, [
             ["john"] * 9,
             ["john is"] * 9,
