@@ -61,7 +61,8 @@ class EventLog:
 
 
 def pack_draws(texts, steps, rewards, cers, hyps, advantages, traces, wcers=None,
-               confidences=None, temperatures=None, images=None, straightness=None):
+               confidences=None, temperatures=None, images=None, straightness=None,
+               spacing=None):
     """One record per rollout, in sample order. Missing traces stay null."""
     traces = list(traces or [])
     rewards = list(rewards or [])
@@ -73,6 +74,7 @@ def pack_draws(texts, steps, rewards, cers, hyps, advantages, traces, wcers=None
     temperatures = list(temperatures or [])
     images = list(images or [])
     straightness = list(straightness or [])
+    spacing = list(spacing or [])
     draws = []
     for i, text in enumerate(texts):
         trace = traces[i] if i < len(traces) else {}
@@ -89,6 +91,7 @@ def pack_draws(texts, steps, rewards, cers, hyps, advantages, traces, wcers=None
             "hyp": hyps[i] if i < len(hyps) else None,
             "image": images[i] if i < len(images) else None,
             "straightness": straightness[i] if i < len(straightness) else None,
+            "spacing": spacing[i] if i < len(spacing) else None,
             "advantage": advantages[i] if i < len(advantages) else trace.get("advantage"),
             "logp": trace.get("logp"),
             "kl": trace.get("kl"),

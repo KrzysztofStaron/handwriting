@@ -291,6 +291,59 @@ def line_straightness(seq, std, bins=12):
     return float(min(1.0, tilt + wobble))
 
 
+def spacing_inconsistency(seq, std, text):
+    """How uneven the gaps between words are. 0 is even. Caps at 1.
+
+    The text says how many word gaps there should be. Those gaps are the
+    widest blanks between pen strokes, one per space. A gap inside a word is
+    smaller and is left out. The score is the mean squared distance of those
+    widths from their median, divided by that median, so a small wobble is
+    almost nothing and a mix of tiny and huge spaces goes to 1. Fewer than
+    two word gaps cannot be uneven.
+    """
+    words = str(text or "").split()
+    needed = len(words) - 1
+    if needed < 2:
+        return 0.0
+    gaps = _word_gap_widths(seq, std)
+    if not gaps:
+        return 0.0
+    chosen = sorted(gaps, reverse=True)[:needed]
+    if len(chosen) < needed:
+        chosen.extend(0.0 for _ in range(needed - len(chosen)))
+    widths = np.asarray(chosen, dtype=np.float64)
+    typical = float(np.median(widths))
+    if typical < 1e-3:
+        return 0.0 if float(widths.max()) < 1e-3 else 1.0
+    relative = (widths - typical) / typical
+    return float(min(1.0, np.mean(relative ** 2)))
+
+
+def _word_gap_widths(seq, std):
+    """Positive horizontal blanks between successive pen strokes."""
+    if torch.is_tensor(seq):
+        seq = seq.detach().cpu().numpy()
+    seq = np.asarray(seq, dtype=np.float64)
+    if seq.ndim != 2 or seq.shape[0] < 2 or seq.shape[1] < 3 or not np.isfinite(seq).all():
+        return []
+    xy = np.cumsum(seq[:, :2] * float(std), axis=0)
+    pen = seq[:, 2] > 0.5
+    spans = []
+    start = 0
+    for index in range(len(seq)):
+        if pen[index] or index == len(seq) - 1:
+            xs = xy[start:index + 1, 0]
+            if len(xs):
+                spans.append((float(xs.min()), float(xs.max())))
+            start = index + 1
+    gaps = []
+    for (left_min, left_max), (right_min, right_max) in zip(spans, spans[1:]):
+        gap = right_min - left_max
+        if gap > 0.0:
+            gaps.append(gap)
+    return gaps
+
+
 def cer_and_reward(reference, hypothesis, kind="exp", tau=0.1, cer_cap=CER_CAP):
     """Return (raw CER, reward). The reward sees CER capped at cer_cap."""
     raw = cer(reference, hypothesis)

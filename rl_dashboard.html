@@ -669,6 +669,7 @@ function sessionLine(session) {
   const bits = [];
   if (session.reward) bits.push(session.reward);
   if (session.straightness) bits.push("straight " + session.straightness);
+  if (session.spacing) bits.push("spacing " + session.spacing);
   if (session.factors && session.beam) bits.push("beam " + session.beam);
   else if (session.beam) bits.push("beam " + session.beam + " × " + (session.keep || "?"));
   if (session.novel) bits.push("novel " + session.novel);

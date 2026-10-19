@@ -314,6 +314,7 @@ class PromptAndTrainerTests(unittest.TestCase):
         self.assertEqual(args.vcer_k, 2)
         self.assertAlmostEqual(args.confidence, 0.2)
         self.assertAlmostEqual(args.straightness, 0.05)
+        self.assertAlmostEqual(args.spacing, 0.05)
         self.assertEqual(args.sample_every, 5)
         self.assertEqual(args.k, 8)
         self.assertEqual(args.beam, 16)

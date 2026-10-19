@@ -50,6 +50,7 @@ from rl import (
     consistency_sheet,
     draw_temperatures,
     line_straightness,
+    spacing_inconsistency,
     load_policy_and_ref,
     select_top,
     refuse_overwrite_base,
@@ -102,7 +103,7 @@ def parse_args(argv=None):
                              "Capitals, digits, and punctuation are dropped.")
     parser.add_argument("--reward", choices=("both", "vcer", "cer", "exp", "linear", "soft"), default="both",
                         help="both: 60% plain CER and 20% visual CER (default), then "
-                             "20% confidence, and straightness is subtracted. "
+                             "20% confidence. Straightness and word-spacing are subtracted. "
                              "vcer: visual distance only. cer: plain CER only. "
                              "exp: exp(-CER). linear: 1-CER. "
                              "soft: 1 at or below --tau, then linear to 0 at CER=1.")
@@ -120,6 +121,11 @@ def parse_args(argv=None):
                         help="Most a crooked line can lose. Two parallel lines sit on the "
                              "top and bottom of the ink. A flat pair (slope 0, no arch) "
                              "loses nothing. 0 turns the penalty off.")
+    parser.add_argument("--spacing", type=float, default=0.05,
+                        help="Most uneven word spacing can lose. The widths of the gaps "
+                             "between words are compared with their middle width. A small "
+                             "wobble barely counts; a mix of tiny and huge gaps can lose "
+                             "this much. 0 turns the penalty off.")
     parser.add_argument("--tau", type=float, default=0.1,
                         help="CER forgiven outright by --reward soft.")
     parser.add_argument("--reward-model", default="microsoft/trocr-large-handwritten")
@@ -459,10 +465,11 @@ def beam_stages(model, ref, scorer, optimizer, prompts, stoi, std, device, args,
         rewards, cers, hyps = scorer.score(images, refs)
         wcors = _wcer_list(scorer, len(hyps))
         bends = [line_straightness(seq, std) for seq in full]
-        if args.straightness > 0:
+        spaces = [spacing_inconsistency(seq, std, prefix) for seq in full]
+        if args.straightness > 0 or args.spacing > 0:
             rewards = [
-                float(reward) - args.straightness * bend
-                for reward, bend in zip(rewards, bends)
+                float(reward) - args.straightness * bend - args.spacing * space
+                for reward, bend, space in zip(rewards, bends, spaces)
             ]
         group = width if stage == 0 else branch
         advs, ema = advantages(rewards, group, ema)
@@ -495,6 +502,7 @@ def beam_stages(model, ref, scorer, optimizer, prompts, stoi, std, device, args,
             temperatures,
             image_names,
             bends,
+            spaces,
         )
         kept = select_top(rewards, keep)
         print("    keep " + ", ".join(f"{rewards[i]:.3f}" for i in kept), flush=True)
@@ -530,10 +538,11 @@ def write_review(model, scorer, text, stoi, std, device, args, index, out_dir):
     images = strokes_to_images(sequences, std)
     rewards, cers, hyps = scorer.score(images, [text] * len(images))
     bends = [line_straightness(seq, std) for seq in sequences]
-    if args.straightness > 0:
+    spaces = [spacing_inconsistency(seq, std, text) for seq in sequences]
+    if args.straightness > 0 or args.spacing > 0:
         rewards = [
-            float(reward) - args.straightness * bend
-            for reward, bend in zip(rewards, bends)
+            float(reward) - args.straightness * bend - args.spacing * space
+            for reward, bend, space in zip(rewards, bends, spaces)
         ]
     wcors = _wcer_list(scorer, len(hyps))
     confs = list(getattr(scorer, "last_confidence", None) or [])
@@ -578,6 +587,7 @@ def write_review(model, scorer, text, stoi, std, device, args, index, out_dir):
                 "wcer": wcer,
                 "confidence": confs[i] if i < len(confs) else None,
                 "straightness": bends[i],
+                "spacing": spaces[i],
                 "reward": reward,
                 "hyp": hyp,
             }
@@ -597,6 +607,8 @@ def main():
         raise SystemExit("--temp-max must be > 0 so some drawings have a density")
     if args.straightness < 0:
         raise SystemExit("--straightness must be >= 0")
+    if args.spacing < 0:
+        raise SystemExit("--spacing must be >= 0")
     if args.k < 1 or args.batch < 1:
         raise SystemExit("--k and --batch must be >= 1")
     if args.beam < 1:
@@ -701,10 +713,12 @@ def main():
             share = "60% plain CER, 20% vCER  " if args.reward == "both" else "vCER  "
             print(f"{share}alpha {cfg['alpha']}  k {cfg['k']}  table {cfg['hash']}  "
                   f"confidence {args.confidence:g}  straightness {args.straightness:g}  "
+                  f"spacing {args.spacing:g}  "
                   f"prompts {args.prompts}", flush=True)
         else:
             print(f"reward {args.reward}  confidence {args.confidence:g}  "
-                  f"straightness {args.straightness:g}  prompts {args.prompts}", flush=True)
+                  f"straightness {args.straightness:g}  spacing {args.spacing:g}  "
+                  f"prompts {args.prompts}", flush=True)
         optimizer = torch.optim.Adam(model.parameters(), lr=args.lr)
         sidecar = load_sidecar(sidecar_for(ckpt, out_dir))
         ema = None
@@ -742,6 +756,7 @@ def main():
             "vcer": scorer.vcer_config,
             "confidence_weight": args.confidence,
             "straightness": args.straightness,
+            "spacing": args.spacing,
             "batch": args.batch,
             "k": args.k,
             "beam": args.beam,

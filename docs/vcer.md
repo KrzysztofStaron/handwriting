@@ -37,7 +37,7 @@ uv run python -m vcer.table_build.build
 
 ## Trainer
 
-`train_rl.py` defaults to `--reward both`. That score is 60% plain CER and 20% this visual distance, then 20% confidence, and straightness is subtracted. `--reward vcer` uses the visual distance alone, plus an exact-match term. `--reward cer` is plain CER and does not load this table. `--reward exp` is `exp(-CER)`.
+`train_rl.py` defaults to `--reward both`. That score is 60% plain CER and 20% this visual distance, then 20% confidence. Straightness and uneven word spacing are subtracted. `--reward vcer` uses the visual distance alone, plus an exact-match term. `--reward cer` is plain CER and does not load this table. `--reward exp` is `exp(-CER)`.
 
 | flag | default | meaning |
 |---|---|---|
@@ -50,6 +50,8 @@ uv run python -m vcer.table_build.build
 Each vCER update logs plain CER, wCER, TrOCR token confidence, the reward spread, mean output length, and the share of thin glyphs `i l 1 . '`.
 
 After that mix, a crooked line loses a little more. The top and the bottom of the ink are each fit by a straight line, and the two lines share one slope. Slope 0 with the ink sitting on those lines scores 0. A tilt or an arch scores higher, up to 1, and `--straightness` (default 0.05) is the most that can come off the reward. `--straightness 0` turns it off.
+
+Uneven gaps between words come off after that. The line's text says how many of those gaps there should be, and the score uses the widest blanks between pen strokes, one per space. Gaps inside a word stay out. The cost is the squared distance of those widths from their median, capped at 1, and `--spacing` (default 0.05) is the most that can come off. `--spacing 0` turns it off.
 
 TrOCR has no separate clarity score. In greedy decoding the confidence of a read is the geometric mean of the probabilities it assigned to the tokens it chose. `--confidence` (default 0.2) is that term's share of the reward: `(1 - weight) * string + weight * confidence`. High confidence raises the reward. `--confidence 0` turns it off. It needs `--beams 1`.
 

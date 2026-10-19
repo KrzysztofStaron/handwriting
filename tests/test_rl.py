@@ -65,6 +65,36 @@ def craft_out(mx=0.3, my=-0.2, sx=0.4, sy=0.4):
     return out
 
 
+def _words(text, word_gaps, letter_gap=3.0, word_width=16.0):
+    """Pen strokes for `text`. `word_gaps` are the blanks between the words."""
+    import numpy as np
+    words = text.split()
+    gaps = list(word_gaps)
+    if len(gaps) != max(len(words) - 1, 0):
+        raise ValueError("one gap per space")
+    pieces = []
+    x = 0.0
+    for index, word in enumerate(words):
+        # Two strokes per word, so a gap inside the word exists and must not count.
+        pieces.append((x, x + word_width * 0.45))
+        x = pieces[-1][1] + letter_gap
+        pieces.append((x, x + word_width * 0.45))
+        x = pieces[-1][1]
+        if index < len(gaps):
+            x += gaps[index]
+    pts = []
+    pens = []
+    for x0, x1 in pieces:
+        xs = np.linspace(x0, x1, 5)
+        for step, value in enumerate(xs):
+            pts.append((float(value), 0.0))
+            pens.append(1.0 if step == len(xs) - 1 else 0.0)
+    xy = np.asarray(pts, dtype=np.float64)
+    delta = np.diff(xy, axis=0, prepend=[[0.0, 0.0]])
+    pen = np.asarray(pens, dtype=np.float64)[:, None]
+    return np.concatenate([delta, pen], axis=1)
+
+
 def _band_seq(xs, y0, y1):
     """Stroke offsets whose ink lies between two y curves. std=1 reconstructs them."""
     import numpy as np
@@ -94,6 +124,24 @@ class StraightnessTests(unittest.TestCase):
         self.assertEqual(line_straightness(np.zeros((3, 3)), std=1.0), 0.0)
         sunk = line_straightness(_band_seq(xs, np.where(xs < 300, 0.0, -10.0), np.where(xs < 300, 10.0, 0.0)), std=1.0)
         self.assertGreater(sunk, arched)
+
+    def test_word_gap_penalty_ignores_a_small_wobble_and_gaps_inside_words(self):
+        from rl import spacing_inconsistency
+        even = spacing_inconsistency(
+            _words("the old man", (20, 20), letter_gap=3), std=1.0, text="the old man")
+        mild = spacing_inconsistency(
+            _words("the old man", (18, 22), letter_gap=3), std=1.0, text="the old man")
+        wild = spacing_inconsistency(
+            _words("the old man", (2, 80), letter_gap=3), std=1.0, text="the old man")
+        inside = spacing_inconsistency(
+            _words("the old man", (30, 30), letter_gap=14), std=1.0, text="the old man")
+        one = spacing_inconsistency(
+            _words("hello", (), letter_gap=2), std=1.0, text="hello")
+        self.assertAlmostEqual(even, 0.0, places=6)
+        self.assertLess(mild, 0.02)
+        self.assertGreater(wild, 0.5)
+        self.assertLess(inside, 0.02)
+        self.assertEqual(one, 0.0)
 
 
 class RewardTests(unittest.TestCase):
