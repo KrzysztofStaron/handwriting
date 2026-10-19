@@ -185,6 +185,14 @@ class DashboardTests(unittest.TestCase):
                 with urllib.request.urlopen(base + "/sheets/ckpt-0001.png") as response:
                     self.assertEqual(response.status, 200)
                     self.assertTrue(response.read().startswith(b"\x89PNG"))
+                with urllib.request.urlopen(base + "/vcer") as response:
+                    self.assertIn("vCER rules", response.read().decode("utf-8"))
+                with urllib.request.urlopen(base + "/api/vcer") as response:
+                    rules = json.load(response)
+                self.assertEqual(rules["counts"]["hand"] + rules["counts"]["hand_render"], 40)
+                with urllib.request.urlopen(base + "/api/vcer/score?ref=d&hyp=ol") as response:
+                    scored = json.load(response)
+                self.assertAlmostEqual(scored["wcer"], 0.25)
                 for path in ("/sheets/secret.txt", "/sheets/..%2Fsecret.txt", "/nope"):
                     with self.assertRaises(urllib.error.HTTPError) as caught:
                         urllib.request.urlopen(base + path)

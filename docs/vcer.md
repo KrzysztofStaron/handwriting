@@ -21,7 +21,7 @@ Substitution spans are 1..K characters, K defaults to 2 and can be 1, 2, or 3. I
 
 ## Cost table
 
-`vcer/table.json` is the table training loads. It has a version and a sha256 prefix. The loader rejects a mismatched hash.
+`vcer/table.json` is the table training loads. It has a version and a sha256 prefix. The loader rejects a mismatched hash. The rule page at [http://127.0.0.1:8765/vcer](http://127.0.0.1:8765/vcer) lists every discounted pair and scores a prompt against a read.
 
 It is the hand list in `vcer/table_build/hand_seed.yaml` merged with glyph images from Bradley Hand and Marker Felt (a pixel stamp is the fallback). A hand-seed pair is an upper bound. A pair that only the renderer produced cannot cost less than 0.55.
 

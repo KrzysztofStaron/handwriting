@@ -1,0 +1,259 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>vCER rules</title>
+<style>
+  :root {
+    color-scheme: light;
+    --ink: #1c1915;
+    --muted: #5e584f;
+    --line: #e3ddd2;
+    --paper: #f7f4ee;
+    --card: #fffdf9;
+    --rust: #9a4318;
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0;
+    background: var(--paper);
+    color: var(--ink);
+    font: 15px/1.45 ui-sans-serif, system-ui, sans-serif;
+  }
+  header, main { width: min(1120px, calc(100% - 32px)); margin: 0 auto; }
+  header {
+    display: flex;
+    justify-content: space-between;
+    gap: 16px;
+    align-items: flex-end;
+    padding: 22px 0 8px;
+  }
+  h1 { font-size: 22px; font-weight: 650; margin: 0; letter-spacing: -0.02em; }
+  h2 { font-size: 15px; margin: 28px 0 8px; }
+  a { color: var(--ink); font-weight: 650; }
+  .sub { color: var(--muted); margin: 4px 0 0; }
+  .rules { margin: 14px 0; }
+  form, .result, table { background: var(--card); border: 1px solid var(--line); border-radius: 10px; }
+  form { display: grid; grid-template-columns: 1fr 1fr auto; gap: 8px; padding: 12px; align-items: end; }
+  @media (max-width: 700px) { form { grid-template-columns: 1fr; } }
+  label { display: flex; flex-direction: column; gap: 4px; font-size: 13px; color: var(--muted); }
+  input, select, button {
+    font: inherit;
+    color: var(--ink);
+    background: var(--card);
+    border: 1px solid var(--line);
+    border-radius: 8px;
+    padding: 6px 8px;
+  }
+  button { cursor: pointer; background: var(--ink); color: var(--paper); border-color: var(--ink); }
+  .presets { display: flex; gap: 8px; margin-top: 8px; }
+  .presets button { background: transparent; color: var(--ink); }
+  .result { margin-top: 10px; padding: 12px; }
+  .result p { margin: 0 0 8px; }
+  .nums { font-variant-numeric: tabular-nums; }
+  table { width: 100%; border-collapse: collapse; }
+  th, td { text-align: left; padding: 6px 10px; border-bottom: 1px solid var(--line); vertical-align: top; }
+  th { font-size: 12px; color: var(--muted); font-weight: 650; }
+  td.span, .mono { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; }
+  .cheap { color: var(--rust); font-weight: 650; }
+  .bar { display: flex; gap: 8px; align-items: center; margin: 8px 0 10px; }
+  .bar input[type="search"] { flex: 1; }
+  .count { color: var(--muted); font-variant-numeric: tabular-nums; }
+  .error { color: var(--rust); }
+</style>
+</head>
+<body>
+<header>
+  <div>
+    <h1>vCER rules</h1>
+    <p id="summary" class="sub"></p>
+  </div>
+  <a href="/">Training</a>
+</header>
+<main>
+  <p id="floors" class="rules"></p>
+
+  <h2>Try a pair</h2>
+  <form id="try">
+    <label>Prompt <input id="ref" value="d" autocomplete="off"></label>
+    <label>Read <input id="hyp" value="ol" autocomplete="off"></label>
+    <button type="submit">Score</button>
+  </form>
+  <div class="presets">
+    <button type="button" data-ref="d" data-hyp="ol">d → ol</button>
+    <button type="button" data-ref="5" data-hyp="S">5 → S</button>
+    <button type="button" data-ref="!" data-hyp="(">! → (</button>
+    <button type="button" data-ref="hello: world" data-hyp="hello : world">space before :</button>
+  </div>
+  <div id="result" class="result" hidden></div>
+
+  <h2>Listed substitutions</h2>
+  <div class="bar">
+    <select id="origin">
+      <option value="hand">Hand list</option>
+      <option value="floor">Font floor</option>
+      <option value="render">Other font overlap</option>
+      <option value="under">Cheaper than a deletion</option>
+      <option value="all">Every discount</option>
+    </select>
+    <input id="q" type="search" placeholder="filter by either side">
+    <span id="shown" class="count"></span>
+  </div>
+  <table>
+    <thead>
+      <tr><th>Prompt</th><th>Read</th><th>Cost</th><th>Where it came from</th></tr>
+    </thead>
+    <tbody id="rows"></tbody>
+  </table>
+</main>
+<script>
+const state = { rules: [], meta: null };
+
+function show(text) {
+  return String(text).replaceAll(" ", "␣");
+}
+
+function money(value) {
+  return Number(value).toFixed(2);
+}
+
+function originLabel(rule) {
+  if (rule.origin === "hand") return "hand list";
+  if (rule.origin === "hand+render") {
+    return "hand list was " + money(rule.seed) + ", font overlap made it " + money(rule.cost);
+  }
+  if (rule.origin === "floor") return "font overlap, held at the floor";
+  return "font overlap";
+}
+
+function matches(rule) {
+  const which = document.getElementById("origin").value;
+  if (which === "hand" && rule.origin !== "hand" && rule.origin !== "hand+render") return false;
+  if (which === "floor" && rule.origin !== "floor") return false;
+  if (which === "render" && rule.origin !== "render") return false;
+  if (which === "under" && !rule.cheaper_than_delete) return false;
+  const q = document.getElementById("q").value.trim();
+  if (!q) return true;
+  return rule.ref.includes(q) || rule.hyp.includes(q);
+}
+
+function paintRules() {
+  const body = document.getElementById("rows");
+  const picked = state.rules.filter(matches);
+  body.replaceChildren();
+  for (const rule of picked) {
+    const tr = document.createElement("tr");
+    const cost = document.createElement("td");
+    cost.className = "nums" + (rule.cheaper_than_delete ? " cheap" : "");
+    cost.textContent = money(rule.cost);
+    const cells = [show(rule.ref), show(rule.hyp)];
+    for (const text of cells) {
+      const td = document.createElement("td");
+      td.className = "span";
+      td.textContent = text;
+      tr.appendChild(td);
+    }
+    tr.appendChild(cost);
+    const from = document.createElement("td");
+    from.textContent = originLabel(rule);
+    tr.appendChild(from);
+    body.appendChild(tr);
+  }
+  document.getElementById("shown").textContent = picked.length + " of " + state.rules.length;
+}
+
+function paintSummary(meta) {
+  const c = meta.counts;
+  document.getElementById("summary").textContent =
+    c.hand + " hand pairs, " + c.hand_render + " of them made cheaper by the fonts. "
+    + c.floor + " pairs sit on the font floor. " + c.render + " more are a graded font overlap. "
+    + c.full + " stored pairs cost 1 and change nothing.";
+  document.getElementById("floors").textContent =
+    "An insertion or a deletion costs " + money(meta.ins) + ", whatever the character is. "
+    + "An unlisted substitution costs 1. A case change with no listed pair costs " + money(meta.case_cost) + ". "
+    + "No substitution goes below " + money(meta.min_sub_cost) + ". "
+    + "A pair that only the fonts produced cannot go below " + money(meta.render_floor) + ". "
+    + "Spans are at most " + meta.k + " characters. "
+    + "The reward is " + meta.alpha + " × (1 − wCER) + " + (1 - meta.alpha).toFixed(1) + " × exact. "
+    + "Table " + meta.hash + ".";
+}
+
+async function score(ref, hyp) {
+  const box = document.getElementById("result");
+  box.hidden = false;
+  const url = "/api/vcer/score?ref=" + encodeURIComponent(ref) + "&hyp=" + encodeURIComponent(hyp);
+  const response = await fetch(url);
+  if (!response.ok) {
+    box.innerHTML = "<p class='error'></p>";
+    box.querySelector("p").textContent = await response.text();
+    return;
+  }
+  const data = await response.json();
+  box.replaceChildren();
+  const head = document.createElement("p");
+  head.className = "nums";
+  head.textContent = "reward " + data.reward.toFixed(3)
+    + "   wCER " + data.wcer.toFixed(3)
+    + "   CER " + data.cer.toFixed(3)
+    + "   distance " + data.distance.toFixed(3)
+    + (data.exact ? "   exact" : "");
+  box.appendChild(head);
+  const norm = document.createElement("p");
+  norm.className = "sub";
+  norm.textContent = "scored as “" + data.ref + "” against “" + data.hyp + "”";
+  box.appendChild(norm);
+  const table = document.createElement("table");
+  const thead = document.createElement("thead");
+  thead.innerHTML = "<tr><th>Edit</th><th>Prompt</th><th>Read</th><th>Cost</th><th>Why</th></tr>";
+  table.appendChild(thead);
+  const body = document.createElement("tbody");
+  for (const op of data.ops) {
+    if (op.op === "eq") continue;
+    const tr = document.createElement("tr");
+    for (const text of [op.op, show(op.ref), show(op.hyp), money(op.cost), op.why]) {
+      const td = document.createElement("td");
+      td.textContent = text;
+      tr.appendChild(td);
+    }
+    tr.children[1].className = "span";
+    tr.children[2].className = "span";
+    tr.children[3].className = "nums";
+    body.appendChild(tr);
+  }
+  if (!body.children.length) {
+    const tr = document.createElement("tr");
+    const td = document.createElement("td");
+    td.colSpan = 5;
+    td.textContent = "No edits.";
+    tr.appendChild(td);
+    body.appendChild(tr);
+  }
+  table.appendChild(body);
+  box.appendChild(table);
+}
+
+document.getElementById("try").addEventListener("submit", (event) => {
+  event.preventDefault();
+  score(document.getElementById("ref").value, document.getElementById("hyp").value);
+});
+document.querySelectorAll(".presets button").forEach((button) => {
+  button.addEventListener("click", () => {
+    document.getElementById("ref").value = button.dataset.ref;
+    document.getElementById("hyp").value = button.dataset.hyp;
+    score(button.dataset.ref, button.dataset.hyp);
+  });
+});
+document.getElementById("origin").addEventListener("change", paintRules);
+document.getElementById("q").addEventListener("input", paintRules);
+
+fetch("/api/vcer").then((response) => response.json()).then((meta) => {
+  state.meta = meta;
+  state.rules = meta.rules;
+  paintSummary(meta);
+  paintRules();
+  score("d", "ol");
+});
+</script>
+</body>
+</html>

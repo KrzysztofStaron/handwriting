@@ -7,6 +7,7 @@ from vcer.costs import CostTable, unit_table
 from vcer.distance import edit_distance
 from vcer.eval.hacking_cases import evaluate
 from vcer.eval.validate import agreement, load_sanity, proposed_pairs
+from vcer.inspect import explain_pair, rule_report
 from vcer.reward import pair_reward, prepare, rewards
 from vcer.table_build.from_confusions import harvest, merge_edits, levenshtein_ops
 from vcer.table_build.from_render import render_similarity, rescale_costs
@@ -181,6 +182,30 @@ class RewardTests(unittest.TestCase):
         apart, apart_diag = pair_reward("hello, world", "hello,world", self.table)
         self.assertLess(apart, 1.0)
         self.assertGreater(apart_diag["cer"], 0.0)
+
+    def test_rule_report_separates_the_hand_list_from_the_font_floor(self):
+        report = rule_report()
+        self.assertEqual(report["counts"]["hand"] + report["counts"]["hand_render"], 40)
+        self.assertGreater(report["counts"]["floor"], 1000)
+        pulled = [item for item in report["rules"] if item["ref"] == "5" and item["hyp"] == "S"]
+        self.assertEqual(pulled[0]["origin"], "hand+render")
+        self.assertAlmostEqual(pulled[0]["cost"], 0.15)
+        self.assertAlmostEqual(pulled[0]["seed"], 0.30)
+        floor = [item for item in report["rules"] if item["ref"] == "!" and item["hyp"] == "("]
+        self.assertEqual(floor[0]["origin"], "floor")
+        self.assertAlmostEqual(floor[0]["cost"], 0.55)
+        self.assertTrue(floor[0]["cheaper_than_delete"])
+
+    def test_explain_names_the_rule_behind_an_edit(self):
+        looked = explain_pair("d", "ol")
+        subs = [op for op in looked["ops"] if op["op"] == "sub"]
+        self.assertEqual(subs[0]["origin"], "hand")
+        self.assertAlmostEqual(subs[0]["cost"], 0.25)
+        self.assertAlmostEqual(looked["wcer"], 0.25)
+        self.assertGreater(looked["cer"], looked["wcer"])
+        same = explain_pair("hello: world", "hello : world")
+        self.assertTrue(same["exact"])
+        self.assertEqual([op for op in same["ops"] if op["op"] != "eq"], [])
 
     def test_batch_matches_pairs(self):
         refs = ["d", "m", "w"]

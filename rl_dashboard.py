@@ -20,6 +20,7 @@ from urllib.parse import parse_qs, unquote, urlparse
 from rl_events import EVENTS_NAME, parse_stdout_log, read_events, write_events
 
 PAGE = Path(__file__).with_name("rl_dashboard.html")
+VCER_PAGE = Path(__file__).with_name("vcer_dashboard.html")
 _SHEET = re.compile(r"^[A-Za-z0-9._-]+\.png$")
 
 
@@ -33,6 +34,24 @@ class Handler(BaseHTTPRequestHandler):
                 self._send(500, "text/plain; charset=utf-8", b"rl_dashboard.html is missing")
                 return
             self._send(200, "text/html; charset=utf-8", PAGE.read_bytes())
+            return
+        if parsed.path == "/vcer":
+            if not VCER_PAGE.is_file():
+                self._send(500, "text/plain; charset=utf-8", b"vcer_dashboard.html is missing")
+                return
+            self._send(200, "text/html; charset=utf-8", VCER_PAGE.read_bytes())
+            return
+        if parsed.path == "/api/vcer":
+            self._send(200, "application/json", _vcer_report())
+            return
+        if parsed.path == "/api/vcer/score":
+            query = parse_qs(parsed.query)
+            try:
+                body = _vcer_score(query.get("ref", [""])[0], query.get("hyp", [""])[0])
+            except ValueError as exc:
+                self._send(400, "text/plain; charset=utf-8", str(exc).encode("utf-8"))
+                return
+            self._send(200, "application/json", body)
             return
         if parsed.path == "/api/events":
             query = parse_qs(parsed.query)
@@ -79,6 +98,16 @@ class Handler(BaseHTTPRequestHandler):
 
     def log_message(self, fmt, *args):
         return
+
+
+def _vcer_report():
+    from vcer.inspect import rule_report
+    return json.dumps(rule_report()).encode("utf-8")
+
+
+def _vcer_score(ref, hyp):
+    from vcer.inspect import explain_pair
+    return json.dumps(explain_pair(ref, hyp)).encode("utf-8")
 
 
 def make_server(directory, port):
