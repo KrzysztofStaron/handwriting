@@ -669,7 +669,8 @@ function sessionLine(session) {
   const bits = [];
   if (session.reward) bits.push(session.reward);
   if (session.straightness) bits.push("straight " + session.straightness);
-  if (session.beam) bits.push("beam " + session.beam + " × " + (session.keep || "?"));
+  if (session.factors && session.beam) bits.push("beam " + session.beam);
+  else if (session.beam) bits.push("beam " + session.beam + " × " + (session.keep || "?"));
   if (session.novel) bits.push("novel " + session.novel);
   if (session.words) bits.push("words " + session.words);
   if (!session.novel && !session.words) {
@@ -929,9 +930,11 @@ function render() {
   const samples = rows.filter((row) => row.type === "update" && row.sheet);
   const chosen = samples.find((row) => String(row.update) === String(state.gen)) || samples[samples.length - 1] || null;
   const genPick = document.getElementById("gen-pick");
-  genPick.innerHTML = samples.slice().reverse().map((row) =>
-    `<option value="${row.update}">${row.update} · reward ${num(row.reward_mean, 3)} · CER ${num(row.cer_mean, 3)}</option>`
-  ).join("");
+  genPick.innerHTML = samples.slice().reverse().map((row) => {
+    const width = row.beam || session.beam;
+    const mode = row.factor && width ? `${width} / ${row.factor} x ${row.factor} · ` : "";
+    return `<option value="${row.update}">${row.update} · ${mode}reward ${num(row.reward_mean, 3)} · CER ${num(row.cer_mean, 3)}</option>`;
+  }).join("");
   if (chosen) genPick.value = String(chosen.update);
   const genIndex = chosen ? samples.findIndex((row) => row.update === chosen.update) : -1;
   document.getElementById("gen-older").disabled = genIndex <= 0;

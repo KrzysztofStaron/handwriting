@@ -741,6 +741,18 @@ def select_top(rewards, keep):
     return order[:keep]
 
 
+def beam_factors(width):
+    """Divisors of the beam width, from 1 up to the width itself.
+
+    A factor f is one way to grow the next word: keep width/f prefixes and
+    continue each of them f times. 16 gives 1, 2, 4, 8, 16. 9 gives 1, 3, 9.
+    """
+    width = int(width)
+    if width < 1:
+        raise ValueError("beam width must be at least 1")
+    return [factor for factor in range(1, width + 1) if width % factor == 0]
+
+
 def pick_prompts(prompts, n):
     if len(prompts) >= n:
         return random.sample(prompts, n)

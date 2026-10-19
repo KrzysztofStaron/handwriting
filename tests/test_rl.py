@@ -27,6 +27,7 @@ from rl import (
     choice_sheet,
     consistency_sheet,
     group_advantages,
+    beam_factors,
     choose_label,
     history_state,
     load_dictionary,
@@ -556,6 +557,14 @@ class BeamTests(unittest.TestCase):
     def test_select_top_breaks_ties_toward_the_earlier_index(self):
         self.assertEqual(select_top([0.2, 0.9, 0.9, 0.1], 2), [1, 2])
 
+    def test_beam_factors_are_the_divisors(self):
+        self.assertEqual(beam_factors(16), [1, 2, 4, 8, 16])
+        self.assertEqual(beam_factors(9), [1, 3, 9])
+        self.assertEqual(beam_factors(7), [1, 7])
+        self.assertEqual(beam_factors(1), [1])
+        with self.assertRaises(ValueError):
+            beam_factors(0)
+
     def test_a_line_averages_every_generation(self):
         import train_rl
         stats = train_rl.summarize_line([
@@ -781,7 +790,7 @@ class BeamTests(unittest.TestCase):
                 return [float(n - i) for i in range(n)], [0.0] * n, list(refs)
 
         args = SimpleNamespace(
-            beam=9, keep=3, temp_min=0.5, temp_max=0.5, sharpen=1.0,
+            beam=9, factor=3, temp_min=0.5, temp_max=0.5, sharpen=1.0,
             straightness=0.0, temperature=0.5, kl=0.0, clip=1.0, sample_every=0,
         )
         scorer = Scorer()
@@ -800,6 +809,7 @@ class BeamTests(unittest.TestCase):
             train_rl.reinforce_step = real_step
 
         self.assertEqual(len(stages), 1)
+        self.assertEqual(stages[0][-1], 3)
         self.assertEqual(len(recorded), 3)
         self.assertEqual(stages[0][0]["used"], 27)
         self.assertEqual(len(stages[0][1]), 27)
@@ -839,6 +849,104 @@ class BeamTests(unittest.TestCase):
                 self.assertEqual(float(item["history"][0][1][0, 0]), 0.0)
                 self.assertEqual(float(item["history"][1][1][0, 0]), mark)
                 self.assertEqual(item["seq"].shape[0], 4)
+
+    def test_the_factor_decides_who_continues(self):
+        import generate
+        import train_rl
+        from types import SimpleNamespace
+
+        def grow(factor):
+            calls = []
+
+            def fake_sample(model, texts, stoi, device, temperature=1.0, states=None,
+                            return_state=False, window_sharpen=2.0):
+                calls.append(states)
+                seqs, saved = [], []
+                for index in range(len(texts)):
+                    seq = torch.zeros(2, 3)
+                    seq[:, 0] = index
+                    seqs.append(seq)
+                    saved.append({"id": (len(calls) - 1, index)})
+                return seqs, saved
+
+            def fake_reinforce(*_args, **_kwargs):
+                return {"loss": 0.0, "kl": 0.0, "used": 9, "grad": 0.0,
+                        "stepped": False, "traces": [{}] * 9}
+
+            class Scorer:
+                last_confidence = None
+
+                def score(self, images, refs):
+                    n = len(refs)
+                    return [float(n - i) for i in range(n)], [0.0] * n, list(refs)
+
+            args = SimpleNamespace(
+                beam=9, factor=factor, temp_min=0.5, temp_max=0.5, sharpen=1.0,
+                straightness=0.0, temperature=0.5, kl=0.0, clip=1.0, sample_every=0,
+            )
+            real_sample, real_step = generate.sample_batch, train_rl.reinforce_step
+            generate.sample_batch = fake_sample
+            train_rl.reinforce_step = fake_reinforce
+            try:
+                stages = list(train_rl.beam_stages(
+                    None, None, Scorer(), None, ["john is"],
+                    {ch: 0 for ch in "john is"}, 1.0, "cpu", args, None,
+                ))
+            finally:
+                generate.sample_batch = real_sample
+                train_rl.reinforce_step = real_step
+            self.assertEqual(stages[0][-1], factor)
+            return calls
+
+        wide = grow(1)
+        self.assertIsNone(wide[0])
+        self.assertEqual([item["id"] for item in wide[1]], [(0, parent) for parent in range(9)])
+        narrow = grow(9)
+        self.assertEqual([item["id"] for item in narrow[1]], [(0, 0)] * 9)
+
+        seen = []
+        real_choice = train_rl.random.choice
+
+        def record(options):
+            seen.append(list(options))
+            return options[-1]
+
+        train_rl.random.choice = record
+        try:
+            def fake_sample(model, texts, stoi, device, temperature=1.0, states=None,
+                            return_state=False, window_sharpen=2.0):
+                seqs = [torch.zeros(2, 3) for _ in texts]
+                return seqs, [{"id": index} for index in range(len(texts))]
+
+            def fake_reinforce(*_args, **_kwargs):
+                return {"loss": 0.0, "kl": 0.0, "used": 9, "grad": 0.0,
+                        "stepped": False, "traces": [{}] * 9}
+
+            class Scorer:
+                last_confidence = None
+
+                def score(self, images, refs):
+                    return [1.0] * len(refs), [0.0] * len(refs), list(refs)
+
+            args = SimpleNamespace(
+                beam=9, temp_min=0.5, temp_max=0.5, sharpen=1.0,
+                straightness=0.0, temperature=0.5, kl=0.0, clip=1.0, sample_every=0,
+            )
+            real_sample, real_step = generate.sample_batch, train_rl.reinforce_step
+            generate.sample_batch = fake_sample
+            train_rl.reinforce_step = fake_reinforce
+            try:
+                stages = list(train_rl.beam_stages(
+                    None, None, Scorer(), None, ["john"],
+                    {"j": 0, "o": 1, "h": 2, "n": 3}, 1.0, "cpu", args, None,
+                ))
+            finally:
+                generate.sample_batch = real_sample
+                train_rl.reinforce_step = real_step
+        finally:
+            train_rl.random.choice = real_choice
+        self.assertEqual(seen, [[1, 3, 9]])
+        self.assertEqual(stages[0][-1], 9)
 
 
 if __name__ == "__main__":

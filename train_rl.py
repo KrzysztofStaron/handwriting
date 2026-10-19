@@ -1,9 +1,10 @@
 """Post-train the handwriting policy with a TrOCR-Large reward.
 
-Each update grows one line a word at a time. Sixteen drawings of the first word
-start from a blank page. The best four are kept, and each is continued four
-ways. TrOCR scores the ink of everything written so far against those words
-plus the word just added. The gradient is applied only to the new strokes.
+Each update grows one line a word at a time. The first word is drawn `--beam`
+times from a blank page. A random divisor f of that width decides the rest:
+the best beam/f prefixes continue, and each is continued f times. TrOCR scores
+the ink of everything written so far against those words plus the word just
+added. The gradient is applied only to the new strokes.
 The 10 samples at a checkpoint are only a review sheet of the full sentence.
 Some training lines are ten short random words from the model alphabet, and
 some are lowercase dictionary words no longer than a play line, so the policy
@@ -30,6 +31,7 @@ reads that file while training runs:
 import argparse
 import json
 import os
+import random
 import re
 import time
 from pathlib import Path
@@ -42,6 +44,7 @@ from rl import (
     TrocrScorer,
     add_policy_args,
     advantages,
+    beam_factors,
     choose_label,
     load_dictionary,
     consistency_sheet,
@@ -80,11 +83,12 @@ def parse_args(argv=None):
     parser.add_argument("--batch", type=int, default=4,
                         help="Unused by the word beam. Each update expands one prompt.")
     parser.add_argument("-k", type=int, default=8,
-                        help="Unused by the word beam. Width and survivors are --beam and --keep.")
+                        help="Unused by the word beam. The width is --beam.")
     parser.add_argument("--beam", type=int, default=16,
-                        help="Drawings of the current prefix. The first word starts from a blank page.")
+                        help="Drawings of each prefix. Each line picks a random divisor f "
+                             "of this width, keeps beam/f prefixes, and continues each f times.")
     parser.add_argument("--keep", type=int, default=4,
-                        help="Best prefixes carried forward. Each is continued beam/keep times.")
+                        help="Unused. The collapse factor is a random divisor of --beam.")
     parser.add_argument("--novel", type=float, default=0.25,
                         help="Chance a training line is ten random words of at most 4 "
                              "letters or digits from the model alphabet, instead of a "
@@ -364,8 +368,8 @@ def beam_stages(model, ref, scorer, optimizer, prompts, stoi, std, device, args,
                 log=None, block=None, out_dir=None, counter=None):
     """Grow one prompt word by word. Yield one update for the whole line.
 
-    The first stage draws `--beam` copies of the first word. Later stages keep
-    the `--keep` best prefixes and continue each one `beam / keep` times.
+    The first stage draws `--beam` copies of the first word. A random divisor
+    f of that width then keeps beam/f prefixes and continues each one f times.
     The picture is every stroke so far, and the target is every word so far,
     including the word just added. The gradient covers only the new strokes.
     The logged update averages every drawing in the line.
@@ -383,8 +387,17 @@ def beam_stages(model, ref, scorer, optimizer, prompts, stoi, std, device, args,
         words=words, lexicon=getattr(args, "lexicon", None),
     )
     prefixes = word_prefixes(text)
-    branch = args.beam // args.keep
-    print(f"    {text!r}  {len(prefixes)} words  beam {args.beam}  keep {args.keep}",
+    width = args.beam
+    factors = beam_factors(width)
+    factor = getattr(args, "factor", None)
+    if factor is None:
+        factor = random.choice(factors)
+    factor = int(factor)
+    if factor not in factors:
+        raise ValueError(f"factor {factor} does not divide beam {width}")
+    keep = width // factor
+    branch = factor
+    print(f"    {text!r}  {len(prefixes)} words  {width} / {factor} x {factor}",
           flush=True)
     update_no = None
     if counter is not None:
@@ -402,8 +415,8 @@ def beam_stages(model, ref, scorer, optimizer, prompts, stoi, std, device, args,
     for stage, prefix in enumerate(prefixes):
         if stage == 0:
             states = None
-            parents = [None] * args.beam
-            histories = [[] for _ in range(args.beam)]
+            parents = [None] * width
+            histories = [[] for _ in range(width)]
         else:
             states = []
             parents = []
@@ -413,10 +426,10 @@ def beam_stages(model, ref, scorer, optimizer, prompts, stoi, std, device, args,
                     states.append(survivor["state"])
                     parents.append(survivor["seq"])
                     histories.append(list(survivor["history"]))
-        temperatures = draw_temperatures(args.beam, args.temp_min, args.temp_max)
-        print(f"    {prefix!r}  {args.beam} draws", flush=True)
+        temperatures = draw_temperatures(width, args.temp_min, args.temp_max)
+        print(f"    {prefix!r}  {width} draws", flush=True)
         sequences, new_states = sample_batch(
-            model, [prefix] * args.beam, stoi, device,
+            model, [prefix] * width, stoi, device,
             temperature=temperatures, window_sharpen=args.sharpen,
             states=states, return_state=True,
         )
@@ -426,7 +439,7 @@ def beam_stages(model, ref, scorer, optimizer, prompts, stoi, std, device, args,
                 full.append(seq)
             else:
                 full.append(torch.cat([parents[index], seq], dim=0))
-            print(f"      draw {index + 1}/{args.beam}  temp {temperatures[index]:.2f}"
+            print(f"      draw {index + 1}/{width}  temp {temperatures[index]:.2f}"
                   f"  +{seq.shape[0]}  ({full[-1].shape[0]} steps)", flush=True)
         if log is not None:
             for index, seq in enumerate(full):
@@ -436,12 +449,12 @@ def beam_stages(model, ref, scorer, optimizer, prompts, stoi, std, device, args,
                     "block": block,
                     "text": prefix,
                     "draw": index + 1,
-                    "k": args.beam,
+                    "k": width,
                     "temperature": temperatures[index],
                     "steps": int(seq.shape[0]),
                 })
         images = strokes_to_images(full, std)
-        refs = [prefix] * args.beam
+        refs = [prefix] * width
         rewards, cers, hyps = scorer.score(images, refs)
         wcors = _wcer_list(scorer, len(hyps))
         bends = [line_straightness(seq, std) for seq in full]
@@ -450,7 +463,7 @@ def beam_stages(model, ref, scorer, optimizer, prompts, stoi, std, device, args,
                 float(reward) - args.straightness * bend
                 for reward, bend in zip(rewards, bends)
             ]
-        group = args.beam if stage == 0 else branch
+        group = width if stage == 0 else branch
         advs, ema = advantages(rewards, group, ema)
         rollouts = []
         for index, seq in enumerate(sequences):
@@ -482,7 +495,7 @@ def beam_stages(model, ref, scorer, optimizer, prompts, stoi, std, device, args,
             image_names,
             bends,
         )
-        kept = select_top(rewards, args.keep)
+        kept = select_top(rewards, keep)
         print("    keep " + ", ".join(f"{rewards[i]:.3f}" for i in kept), flush=True)
         survivors = [
             {
@@ -501,7 +514,7 @@ def beam_stages(model, ref, scorer, optimizer, prompts, stoi, std, device, args,
         all_wcors.extend(wcors)
     yield (
         summarize_line(word_stats), all_rewards, all_cers, all_hyps, all_refs,
-        ema, all_draws, all_wcors, sheet_name, source,
+        ema, all_draws, all_wcors, sheet_name, source, factor,
     )
 
 
@@ -585,8 +598,8 @@ def main():
         raise SystemExit("--straightness must be >= 0")
     if args.k < 1 or args.batch < 1:
         raise SystemExit("--k and --batch must be >= 1")
-    if args.beam < 2 or args.keep < 1 or args.beam % args.keep != 0:
-        raise SystemExit("--beam must be at least 2 and a multiple of --keep")
+    if args.beam < 1:
+        raise SystemExit("--beam must be at least 1")
     if not 0.0 <= args.novel <= 1.0:
         raise SystemExit("--novel must be between 0 and 1")
     if not 0.0 <= args.words <= 1.0:
@@ -641,7 +654,7 @@ def main():
         print("sampler on cpu (one pen step at a time is faster there); TrOCR on mps",
               flush=True)
     print(f"KL anchor: {args.ref}", flush=True)
-    print(f"word beam {args.beam}, keep {args.keep}   "
+    print(f"word beam {args.beam}, factors {beam_factors(args.beam)}   "
           f"checkpoint about every {args.block_minutes:g} min", flush=True)
     print(f"temperature: normal around {(args.temp_min + args.temp_max) / 2:g}, "
           f"kept inside {args.temp_min:g} to {args.temp_max:g}",
@@ -730,7 +743,7 @@ def main():
             "batch": args.batch,
             "k": args.k,
             "beam": args.beam,
-            "keep": args.keep,
+            "factors": beam_factors(args.beam),
             "novel": 0.0 if args.text else args.novel,
             "words": 0.0 if args.text else args.words,
             "temperature_min": args.temp_min,
@@ -759,7 +772,7 @@ def main():
                 while True:
                     counter = [updates]
                     stop_block = False
-                    for stats, rewards, cers, hyps, refs, ema, draws, wcors, sheet_name, source in beam_stages(
+                    for stats, rewards, cers, hyps, refs, ema, draws, wcors, sheet_name, source, factor in beam_stages(
                         model, ref, scorer, optimizer, prompts, stoi, std, device, args, ema,
                         log=log, block=index, out_dir=out_dir, counter=counter,
                     ):
@@ -782,6 +795,7 @@ def main():
                         finished = [i for i, ref in enumerate(refs) if ref == full_text]
                         best_i = max(finished, key=lambda i: rewards[i])
                         print(f"  update {updates}  {elapsed:.1f} min  "
+                              f"{args.beam} / {factor} x {factor}  "
                               f"reward {reward_mean:.3f}  "
                               f"cer {cer_mean:.3f}  "
                               f"{wcer_bit}"
@@ -816,6 +830,8 @@ def main():
                                 sum(item["steps"] for item in draws) / len(draws) if draws else None
                             ),
                             "source": source,
+                            "beam": args.beam,
+                            "factor": factor,
                             "example": {"text": full_text, "hyp": hyps[best_i]},
                             "sheet": sheet_name,
                             "draws": draws,
