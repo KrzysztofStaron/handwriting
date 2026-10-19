@@ -38,10 +38,10 @@ from rl import (
     resolve_prompts,
     reveal,
     reinforce_step,
-    rollout,
+    rollout_batch,
     save_policy,
     set_seed,
-    strokes_to_image,
+    strokes_to_images,
 )
 
 
@@ -139,21 +139,21 @@ def main():
         while args.rounds <= 0 or accepted < args.rounds:
             text = pick_prompts(prompts, 1)[0]
             print(f"\n[{accepted + 1}] {text}", flush=True)
-            seqs = []
-            for i in range(args.k):
-                seq = rollout(model, text, stoi, device, args.temperature, args.sharpen)
-                seqs.append(seq)
-                print(f"  sample {i + 1}/{args.k}: {seq.shape[0]} steps", flush=True)
+            print(f"  drawing {args.k} lines in one batch", flush=True)
+            seqs = rollout_batch(
+                model, [text] * args.k, stoi, device, args.temperature, args.sharpen)
+            for i, seq in enumerate(seqs, start=1):
+                print(f"  sample {i}/{args.k}: {seq.shape[0]} steps", flush=True)
                 log.write({
                     "type": "draw",
                     "update": accepted + 1,
                     "text": text,
-                    "draw": i + 1,
+                    "draw": i,
                     "k": args.k,
                     "steps": int(seq.shape[0]),
                 })
 
-            images = [strokes_to_image(seq.numpy(), std, height=220, stroke_width=4) for seq in seqs]
+            images = strokes_to_images(seqs, std, height=220, stroke_width=4)
             sheet = choice_sheet(images, text)
             shown += 1
             path = sheet_dir / f"round{shown:04d}.png"

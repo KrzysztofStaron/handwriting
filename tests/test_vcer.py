@@ -188,11 +188,11 @@ class PromptAndTrainerTests(unittest.TestCase):
         root = Path(__file__).resolve().parents[1]
         alphabet = set(json.loads((root / "stoi.json").read_text(encoding="utf-8")))
         lines = (root / "data" / "romeo_juliet.txt").read_text(encoding="utf-8").splitlines()
-        self.assertGreater(len(lines), 1000)
+        self.assertGreater(len(lines), 200)
         self.assertNotIn("the old man", lines)
         for line in lines:
             self.assertGreaterEqual(len(line), 8)
-            self.assertLessEqual(len(line), 32)
+            self.assertLessEqual(len(line), 48)
             self.assertTrue(set(line) <= alphabet)
 
     def test_recognizer_defaults_to_vcer_and_the_play(self):
@@ -200,8 +200,76 @@ class PromptAndTrainerTests(unittest.TestCase):
         args = train_rl.parse_args([])
         self.assertEqual(args.reward, "vcer")
         self.assertEqual(args.prompts, "data/romeo_juliet.txt")
+        self.assertEqual(args.max_chars, 48)
         self.assertAlmostEqual(args.vcer_alpha, 0.8)
         self.assertEqual(args.vcer_k, 2)
+        self.assertAlmostEqual(args.confidence, 0.2)
+        self.assertEqual(args.sample_every, 5)
+        self.assertEqual(args.k, 8)
+        self.assertEqual(args.temp_min, 0.1)
+        self.assertEqual(args.temp_max, 0.9)
+
+    def test_labels_keep_their_order_and_rewards_go_high_to_low(self):
+        import train_rl
+        refs = ["beta", "alpha", "beta", "alpha"]
+        rewards = [0.2, 0.4, 0.9, 0.1]
+        order = train_rl.label_reward_order(refs, rewards)
+        self.assertEqual([refs[i] for i in order], ["beta", "beta", "alpha", "alpha"])
+        self.assertEqual([rewards[i] for i in order], [0.9, 0.2, 0.4, 0.1])
+
+    def test_training_sheet_saves_the_batch(self):
+        import tempfile
+        from pathlib import Path
+        from PIL import Image
+        import train_rl
+        images = [
+            Image.new("RGB", (48, 20), "white"),
+            Image.new("RGB", (36, 18), "white"),
+        ]
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "gen-000005.png"
+            name = train_rl.save_training_sheet(
+                images,
+                [
+                    "Two households, both alike in dignity",
+                    "From ancient grudge break to new mutiny",
+                ],
+                ["Two households, both alike", "From ancient grudge"],
+                [0.25, 0.4],
+                [0.9, 0.4],
+                path,
+                5,
+            )
+            self.assertEqual(name, "gen-000005.png")
+            self.assertTrue(path.is_file())
+            with Image.open(path) as sheet:
+                self.assertEqual(sheet.format, "PNG")
+                self.assertGreater(sheet.size[0], 48)
+                self.assertGreater(sheet.size[1], 40)
+
+    def test_each_sample_saves_its_own_picture(self):
+        import tempfile
+        from pathlib import Path
+        from PIL import Image
+        import train_rl
+        from rl_events import pack_draws
+        images = [
+            Image.new("RGB", (40, 200), "white"),
+            Image.new("RGB", (30, 40), "white"),
+        ]
+        with tempfile.TemporaryDirectory() as tmp:
+            names = train_rl.save_sample_images(images, Path(tmp), 5)
+            self.assertEqual(names, ["gen-000005-00.png", "gen-000005-01.png"])
+            with Image.open(Path(tmp) / names[0]) as preview:
+                self.assertEqual(preview.format, "PNG")
+                self.assertEqual(preview.size, (32, 160))
+            with Image.open(Path(tmp) / names[1]) as preview:
+                self.assertEqual(preview.size, (30, 40))
+        draws = pack_draws(
+            ["beta", "alpha"], [10, 12], [0.2, 0.9], [0.1, 0.0],
+            ["b", "alpha"], [0.0, 0.0], None, images=names,
+        )
+        self.assertEqual([draw["image"] for draw in draws], names)
 
 
 class TableAndSuiteTests(unittest.TestCase):

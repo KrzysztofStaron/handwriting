@@ -25,14 +25,16 @@ CER is capped at 2 before that map.
 
 import json
 import math
+import os
 import random
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
 import numpy as np
 import torch
 
 from data import collate
-from generate import load_model, sample
+from generate import load_model, sample_batch
 from model import split_params
 
 BASE_CKPT = "models/best-4.pth"
@@ -63,6 +65,33 @@ def set_seed(seed):
     random.seed(seed)
     np.random.seed(seed)
     torch.manual_seed(seed)
+
+
+def draw_temperatures(count, low, high):
+    """Truncated normal on [low, high], centered on the midpoint.
+
+    The interval is six standard deviations each side of the midpoint, so the
+    density is piled on the middle and the ends almost never appear. Samples
+    that fall outside are rejected. A zero-width range returns that temperature.
+    """
+    low = float(low)
+    high = float(high)
+    if count < 0:
+        raise ValueError("count must be >= 0")
+    if high < low:
+        raise ValueError("temperature max is below min")
+    if count == 0:
+        return []
+    if low == high:
+        return [low] * count
+    mean = (low + high) / 2.0
+    sigma = (high - low) / 12.0
+    draws = []
+    while len(draws) < count:
+        value = random.gauss(mean, sigma)
+        if low <= value <= high:
+            draws.append(value)
+    return draws
 
 
 def normalize_text(text):
@@ -132,6 +161,46 @@ def reward_from_cer(value, kind="exp", tau=0.1):
     raise ValueError(f"unknown reward {kind!r} (expected linear, exp, soft)")
 
 
+def token_confidence(scores, sequences, skip_ids):
+    """Geometric mean of the probabilities TrOCR assigned to the tokens it chose.
+
+    `scores[t]` is the logit row that picked `sequences[:, t + 1]`. End-of-sequence
+    and padding tokens are left out, so a short confident stop does not look like
+    a clear transcription. No content tokens scores 0.
+    """
+    if not scores:
+        return [0.0] * len(sequences)
+    steps = min(len(scores), sequences.shape[1] - 1)
+    confidences = []
+    for row in range(sequences.shape[0]):
+        chosen = []
+        for step in range(steps):
+            token = int(sequences[row, step + 1])
+            if token in skip_ids:
+                continue
+            log_probs = torch.log_softmax(scores[step][row].float(), dim=-1)
+            chosen.append(log_probs[token])
+        if not chosen:
+            confidences.append(0.0)
+        else:
+            confidences.append(float(torch.exp(torch.stack(chosen).mean())))
+    return confidences
+
+
+def mix_confidence(reward, confidence, weight, cer):
+    """Keep the string score in charge. Confidence is good only when the read is close.
+
+    The confidence term is confidence * (1 - 2 * min(CER, 1)). It is +confidence
+    at CER 0, zero at CER 0.5, and -confidence at CER 1 or above. `weight` is
+    that term's share of the reward. The rest stays the string reward.
+    """
+    if confidence is None or weight <= 0:
+        return float(reward)
+    error = min(max(float(cer), 0.0), 1.0)
+    signed = float(confidence) * (1.0 - 2.0 * error)
+    return (1.0 - weight) * float(reward) + weight * signed
+
+
 def cer_and_reward(reference, hypothesis, kind="exp", tau=0.1, cer_cap=CER_CAP):
     """Return (raw CER, reward). The reward sees CER capped at cer_cap."""
     raw = cer(reference, hypothesis)
@@ -144,7 +213,17 @@ def apply_temperature(pi, sig_x, sig_y, temperature):
     Mixture weights become pi^(1+b) / Z and each std is multiplied by temperature.
     This is the density generate.sample_iter actually draws from, so the REINFORCE
     score has to use it too. temperature <= 0 is a point mass and has no density.
+    A 1-D tensor gives each batch row its own temperature.
     """
+    if torch.is_tensor(temperature):
+        temp = temperature.to(device=pi.device, dtype=pi.dtype)
+        if torch.any(temp <= 0):
+            raise ValueError("temperature must be > 0; 0 is a point mass and has no density")
+        while temp.ndim < pi.ndim:
+            temp = temp.unsqueeze(-1)
+        bias = -torch.log(temp)
+        log_pi = torch.log(pi.clamp_min(1e-12)) * (1.0 + bias)
+        return torch.softmax(log_pi, dim=-1), sig_x * temp, sig_y * temp
     if temperature <= 0:
         raise ValueError("temperature must be > 0; 0 is a point mass and has no density")
     if abs(temperature - 1.0) < 1e-8:
@@ -189,29 +268,55 @@ def step_logprob(out, y, temperature=1.0):
     return log_xy + log_pen
 
 
-def trajectory_logprob(model, seq, text, stoi, device, temperature, sharpen):
-    """Teacher-forced sum of log pi(seq | text), and the number of real steps.
+def _replay_batch(seqs, texts, stoi):
+    """Teacher-forced (input, target, char index) rows for collate."""
+    rows = []
+    for seq, text in zip(seqs, texts):
+        missing = [ch for ch in text if ch not in stoi]
+        if missing:
+            raise ValueError(f"text has characters outside the vocab: {sorted(set(missing))}")
+        seq = seq.detach().float().cpu()
+        if seq.ndim != 2 or seq.shape[-1] != 3 or seq.shape[0] == 0:
+            raise ValueError("seq must be (T, 3) with T > 0")
+        start = torch.zeros(1, 3)
+        inp = torch.cat([start, seq[:-1]], dim=0)
+        idx = torch.tensor([stoi[ch] for ch in text], dtype=torch.long)
+        rows.append((inp, seq, idx))
+    return rows
+
+
+def trajectory_logprobs(model, seqs, texts, stoi, device, temperature, sharpen,
+                        temperatures=None):
+    """Teacher-forced sum of log pi for a batch. Returns (logp (B,), length (B,)).
 
     Sampling feeds each point back as the next input. Replaying those points
     through forward() is the same autoregressive density, and it is the graph
     REINFORCE differentiates. `sharpen` has to match the value used while
     sampling: it scales beta inside compute_window, so it is part of the policy.
+    Pass `temperatures` for a different temperature on each row; otherwise every
+    row uses `temperature`. Shorter rows are padded. The mask drops those steps,
+    and the window's phantom position stays on the real last character.
     """
-    missing = [ch for ch in text if ch not in stoi]
-    if missing:
-        raise ValueError(f"text has characters outside the vocab: {sorted(set(missing))}")
-    seq = seq.detach().float().cpu()
-    if seq.ndim != 2 or seq.shape[-1] != 3 or seq.shape[0] == 0:
-        raise ValueError("seq must be (T, 3) with T > 0")
-    start = torch.zeros(1, 3)
-    inp = torch.cat([start, seq[:-1]], dim=0)
-    idx = torch.tensor([stoi[ch] for ch in text], dtype=torch.long)
-    x, y, mask, c, c_mask = collate([(inp, seq, idx)], vocab_size=len(stoi))
+    if temperatures is None:
+        temperatures = [float(temperature)] * len(seqs)
+    if len(temperatures) != len(seqs):
+        raise ValueError("one temperature per trajectory")
+    if any(float(value) <= 0 for value in temperatures):
+        raise ValueError("temperature must be > 0; 0 is a point mass and has no density")
+    x, y, mask, c, c_mask = collate(_replay_batch(seqs, texts, stoi), vocab_size=len(stoi))
     x, y, mask, c, c_mask = [t.to(device) for t in (x, y, mask, c, c_mask)]
     model.window_sharpen = sharpen
     out, _, _, _ = model(x, c, c_mask)
-    total = (step_logprob(out, y, temperature=temperature) * mask).sum()
-    return total, mask.sum().detach()
+    temp = torch.tensor([float(value) for value in temperatures], dtype=out.dtype, device=device)
+    per = step_logprob(out, y, temperature=temp) * mask
+    return per.sum(dim=1), mask.sum(dim=1)
+
+
+def trajectory_logprob(model, seq, text, stoi, device, temperature, sharpen):
+    """Teacher-forced sum of log pi(seq | text), and the number of real steps."""
+    total, length = trajectory_logprobs(
+        model, [seq], [text], stoi, device, temperature, sharpen)
+    return total[0], length[0]
 
 
 def reinforce_loss(logp_sum, logp_ref_sum, length, advantage, kl_coef):
@@ -262,12 +367,22 @@ def advantages(rewards, k, ema):
     return [r - baseline for r in rewards], new_ema
 
 
+# Eight lines at a time keeps the backward graph on a laptop while the
+# sampler still draws the whole update in one loop.
+_GRAD_CHUNK = 8
+# A colder gaussian has a larger score. Scaling the loss by T / 0.5 keeps a
+# draw at the old fixed temperature the same size, and stops a near-zero draw
+# from owning the whole update.
+_TEMP_REFERENCE = 0.5
+
+
 def reinforce_step(model, ref, rollouts, advs, stoi, device, temperature,
                    sharpen, kl_coef, optimizer, clip):
-    """On-policy update over a list of {text, seq} rollouts. One backward at a time.
+    """On-policy update over a list of {text, seq} rollouts.
 
-    A full line is hundreds of sequential LSTM steps, so the trajectories are
-    differentiated one by one and the gradients are averaged.
+    The score-function backward runs in chunks of variable-length lines. Each
+    chunk is one padded forward. Gradients are averaged over the whole update,
+    including rows that were skipped.
     """
     optimizer.zero_grad(set_to_none=True)
     n = len(rollouts)
@@ -275,46 +390,67 @@ def reinforce_step(model, ref, rollouts, advs, stoi, device, temperature,
     loss_acc = 0.0
     kl_acc = 0.0
     traces = []
+    pending = []
     model.train()
-    for item, adv in zip(rollouts, advs):
+    for index, (item, adv) in enumerate(zip(rollouts, advs)):
         adv_f = float(adv)
+        temp = float(item.get("temperature", temperature))
         trace = {
             "advantage": adv_f,
+            "temperature": temp,
             "logp": None,
             "kl": None,
             "length": None,
             "skipped": None,
         }
+        traces.append(trace)
         if not math.isfinite(adv_f):
             trace["skipped"] = "nonfinite_advantage"
-            traces.append(trace)
             continue
-        logp, length = trajectory_logprob(
-            model, item["seq"], item["text"], stoi, device, temperature, sharpen)
+        if temp <= 0:
+            # The mode has no density. Its reward still sits in the baseline.
+            trace["skipped"] = "zero_temperature"
+            continue
+        pending.append(index)
+    for start in range(0, len(pending), _GRAD_CHUNK):
+        chosen = pending[start:start + _GRAD_CHUNK]
+        seqs = [rollouts[index]["seq"] for index in chosen]
+        texts = [rollouts[index]["text"] for index in chosen]
+        temps = [traces[index]["temperature"] for index in chosen]
+        logp, length = trajectory_logprobs(
+            model, seqs, texts, stoi, device, temperature, sharpen, temperatures=temps)
         if kl_coef:
             with torch.no_grad():
-                logp_ref, _ = trajectory_logprob(
-                    ref, item["seq"], item["text"], stoi, device, temperature, sharpen)
+                logp_ref, _ = trajectory_logprobs(
+                    ref, seqs, texts, stoi, device, temperature, sharpen, temperatures=temps)
         else:
-            logp_ref = torch.zeros((), device=logp.device)
-        if not torch.isfinite(logp) or not torch.isfinite(logp_ref):
-            print(f"  non-finite logprob for {item['text']!r}, skipping", flush=True)
-            trace["skipped"] = "nonfinite_logprob"
-            traces.append(trace)
-            continue
-        loss = reinforce_loss(logp, logp_ref, length, adv, kl_coef)
-        (loss / n).backward()
-        used += 1
-        loss_acc += float(loss.detach())
-        trace["logp"] = float(logp.detach())
-        trace["length"] = int(length.detach().item())
-        if kl_coef:
-            step_kl = float((logp.detach() - logp_ref.detach()) / length.clamp(min=1))
-            kl_acc += step_kl
-            trace["kl"] = step_kl
-        else:
-            trace["kl"] = 0.0
-        traces.append(trace)
+            logp_ref = torch.zeros(len(chosen), device=logp.device)
+        losses = []
+        for local, index in enumerate(chosen):
+            trace = traces[index]
+            item = rollouts[index]
+            lp = logp[local]
+            lp_ref = logp_ref[local]
+            leng = length[local]
+            if not torch.isfinite(lp) or not torch.isfinite(lp_ref):
+                print(f"  non-finite logprob for {item['text']!r}, skipping", flush=True)
+                trace["skipped"] = "nonfinite_logprob"
+                continue
+            loss = reinforce_loss(lp, lp_ref, leng, trace["advantage"], kl_coef)
+            scale = trace["temperature"] / _TEMP_REFERENCE
+            losses.append(loss * scale / n)
+            used += 1
+            loss_acc += float(loss.detach())
+            trace["logp"] = float(lp.detach())
+            trace["length"] = int(leng.detach().item())
+            if kl_coef:
+                step_kl = float((lp.detach() - lp_ref.detach()) / leng.clamp(min=1))
+                kl_acc += step_kl
+                trace["kl"] = step_kl
+            else:
+                trace["kl"] = 0.0
+        if losses:
+            torch.stack(losses).sum().backward()
     grad_norm = 0.0
     stepped = False
     if used:
@@ -353,18 +489,29 @@ def load_policy_and_ref(ckpt, ref, device):
 
 def rollout(model, text, stoi, device, temperature, sharpen):
     """One trajectory from the same sampler generate.py uses. Returns (T, 3) on CPU."""
+    return rollout_batch(model, [text], stoi, device, temperature, sharpen)[0]
+
+
+def rollout_batch(model, texts, stoi, device, temperature, sharpen):
+    """Every text in one batched sampler loop. Each result is (T, 3) on CPU.
+
+    `temperature` is one float, or one float per text.
+    """
     training = model.training
     model.eval()
-    seq, _phis = sample(
-        model, text, stoi, device,
+    seqs = sample_batch(
+        model, texts, stoi, device,
         temperature=temperature, window_sharpen=sharpen,
     )
     if training:
         model.train()
-    seq = seq.detach().float().cpu()
-    if seq.ndim != 2 or seq.shape[0] == 0:
-        raise RuntimeError(f"model produced an empty trajectory for {text!r}")
-    return seq
+    out = []
+    for text, seq in zip(texts, seqs):
+        seq = seq.detach().float().cpu()
+        if seq.ndim != 2 or seq.shape[0] == 0:
+            raise RuntimeError(f"model produced an empty trajectory for {text!r}")
+        out.append(seq)
+    return out
 
 
 def load_prompts(path, stoi, min_chars, max_chars):
@@ -487,6 +634,24 @@ def strokes_to_image(seq, std, height=384, stroke_width=5, pad=28, supersample=2
     return img
 
 
+def strokes_to_images(seqs, std, **kwargs):
+    """Render several trajectories at once. Each image is independent."""
+    arrays = []
+    for seq in seqs:
+        if torch.is_tensor(seq):
+            seq = seq.detach().cpu().numpy()
+        arrays.append(np.asarray(seq))
+    if len(arrays) <= 1:
+        return [strokes_to_image(seq, std, **kwargs) for seq in arrays]
+    workers = min(len(arrays), os.cpu_count() or 1, 8)
+
+    def draw(seq):
+        return strokes_to_image(seq, std, **kwargs)
+
+    with ThreadPoolExecutor(max_workers=workers) as pool:
+        return list(pool.map(draw, arrays))
+
+
 def consistency_sheet(images, text, captions, step=None, summary=""):
     """Stack every sample of one sentence, with a caption above each line.
 
@@ -595,7 +760,8 @@ class TrocrScorer:
     """
 
     def __init__(self, device, model_name="microsoft/trocr-large-handwritten",
-                 kind="exp", tau=0.1, beams=1, vcer_alpha=0.8, vcer_k=2, vcer_table=None):
+                 kind="exp", tau=0.1, beams=1, vcer_alpha=0.8, vcer_k=2, vcer_table=None,
+                 confidence_weight=0.2):
         try:
             from transformers import TrOCRProcessor, VisionEncoderDecoderModel
         except ImportError as exc:
@@ -613,6 +779,16 @@ class TrocrScorer:
         self.kind = kind
         self.tau = tau
         self.beams = beams
+        self.confidence_weight = float(confidence_weight)
+        tokenizer = self.processor.tokenizer
+        self._skip_ids = {
+            token_id for token_id in (
+                tokenizer.eos_token_id,
+                tokenizer.pad_token_id,
+                tokenizer.bos_token_id,
+                getattr(self.model.config, "decoder_start_token_id", None),
+            ) if token_id is not None
+        }
         self._vcer = None
         self.vcer_config = None
         # Phase 6 integration point: vCER is a second reward on the decoded string.
@@ -621,28 +797,80 @@ class TrocrScorer:
             self._vcer = VcerReward.load(vcer_table, k=vcer_k, alpha=vcer_alpha)
             self.vcer_config = self._vcer.config
 
+    def _decode_limit(self, references):
+        """Room for a 10–20 word line. TrOCR stops at its end token before this."""
+        longest = max((len(str(text)) for text in references), default=0)
+        return min(160, max(64, longest + 8))
+
+    def _with_confidence(self, rewards, cers, details=None):
+        confs = self.last_confidence
+        weight = getattr(self, "confidence_weight", 0.0)
+        if not confs or len(confs) != len(rewards) or len(cers) != len(rewards) or weight <= 0:
+            return rewards
+        if details is not None:
+            for item, confidence in zip(details, confs):
+                item["confidence"] = confidence
+        return [mix_confidence(reward, confidence, weight, cer)
+                for reward, confidence, cer in zip(rewards, confs, cers)]
+
     @torch.no_grad()
-    def read(self, images):
+    def read(self, images, max_new_tokens=64):
+        # TrOCR-Large already batches the images it is given. A whole update
+        # is 32 lines, which is more than this GPU comfortably encodes at once,
+        # so the call is split into chunks that stay batched inside.
+        if not images:
+            self.last_confidence = []
+            return []
+        hyps = []
+        confidences = []
+        saw_confidence = False
+        for start in range(0, len(images), 8):
+            chunk = self._read_chunk(images[start:start + 8], max_new_tokens)
+            hyps.extend(chunk)
+            if self.last_confidence is not None:
+                saw_confidence = True
+                confidences.extend(self.last_confidence)
+        self.last_confidence = confidences if saw_confidence else None
+        return hyps
+
+    def _read_chunk(self, images, max_new_tokens):
         encoded = self.processor(images=images, return_tensors="pt", padding=True)
         pixel_values = encoded.pixel_values.to(self.device)
-        ids = self.model.generate(
-            pixel_values, num_beams=self.beams, max_new_tokens=64)
+        generate_kwargs = {"num_beams": self.beams, "max_new_tokens": max_new_tokens}
+        # Greedy decoding already has a logit row per chosen token. Beam search
+        # does not line those rows up with the finished string, so confidence
+        # stays off unless --beams 1.
+        if self.beams == 1 and getattr(self, "confidence_weight", 0.0) > 0:
+            outputs = self.model.generate(
+                pixel_values,
+                return_dict_in_generate=True,
+                output_scores=True,
+                **generate_kwargs,
+            )
+            self.last_confidence = token_confidence(
+                outputs.scores, outputs.sequences, self._skip_ids)
+            ids = outputs.sequences
+        else:
+            self.last_confidence = None
+            ids = self.model.generate(pixel_values, **generate_kwargs)
         return self.processor.batch_decode(ids, skip_special_tokens=True)
 
     def score(self, images, references):
-        hyps = self.read(images)
+        self.last_confidence = None
+        hyps = self.read(images, max_new_tokens=self._decode_limit(references))
         vcer = getattr(self, "_vcer", None)
         if vcer is not None:
             rewards, details = vcer.score_batch(references, hyps)
             self.last_details = details
-            return rewards, [item["cer"] for item in details], hyps
+            cers = [item["cer"] for item in details]
+            return self._with_confidence(rewards, cers, details), cers, hyps
         self.last_details = None
         cers, rewards = [], []
         for ref, hyp in zip(references, hyps):
             raw, reward = cer_and_reward(ref, hyp, kind=self.kind, tau=self.tau)
             cers.append(raw)
             rewards.append(reward)
-        return rewards, cers, hyps
+        return self._with_confidence(rewards, cers), cers, hyps
 
 
 def add_policy_args(parser, default_save):
@@ -663,11 +891,13 @@ def add_policy_args(parser, default_save):
     parser.add_argument("--clip", type=float, default=1.0, help="Gradient norm clip.")
     parser.add_argument("--prompts", default="data/romeo_juliet.txt",
                         help="Line pool. Sampled at random. Default is the whole of "
-                             "Romeo and Juliet, cut into 8–32 character lines.")
+                             "Romeo and Juliet, cut into lines of at most 48 characters.")
     parser.add_argument("--text", default=None,
                         help="Use this prompt every time instead of sampling --prompts.")
     parser.add_argument("--min-chars", type=int, default=8)
-    parser.add_argument("--max-chars", type=int, default=32)
+    parser.add_argument("--max-chars", type=int, default=48,
+                        help="Drop prompts longer than this. 48 keeps a line readable "
+                             "after TrOCR resizes it to a square.")
     parser.add_argument("--seed", type=int, default=None)
     parser.add_argument("--device", default=None)
     return parser

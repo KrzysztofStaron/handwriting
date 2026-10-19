@@ -136,12 +136,12 @@ Both stages keep `models/best-4.pth` as a frozen KL anchor and never write that 
 
 | `--reward` | value |
 |---|---|
-| `vcer` (default) | `0.8 * (1 - wCER) + 0.2 * exact`, in [0, 1] |
+| `vcer` (default) | `0.8 * (1 - wCER) + 0.2 * exact`, then mixed with TrOCR confidence (`--confidence`, default 0.2). High confidence helps a close read and hurts a wrong one. |
 | `exp` | `exp(-CER)`, in (0, 1] |
 | `linear` | `1 - CER` |
 | `soft` | `1` when CER is at or below `--tau` (default 0.1), then a straight fall to 0 at CER = 1 |
 
-Prompts default to `data/romeo_juliet.txt`, the whole play cut into short lines and sampled at random. `--prompts data/sentences.txt` is the IAM pool.
+Prompts default to `data/romeo_juliet.txt`, the whole play cut into lines of at most 48 characters and sampled at random. `--prompts data/sentences.txt` is the IAM pool. `--max-chars` defaults to 48 so TrOCR's square resize does not squash the line.
 
 **Human preference.** The model draws 3 samples of one prompt. You pick the best. That sample scores 1 and the other two score 0.
 

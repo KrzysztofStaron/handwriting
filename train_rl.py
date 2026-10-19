@@ -35,17 +35,18 @@ from rl import (
     add_policy_args,
     advantages,
     consistency_sheet,
+    draw_temperatures,
     load_policy_and_ref,
     pick_prompts,
     refuse_overwrite_base,
     reinforce_step,
     resolve_prompts,
     reveal,
-    rollout,
     save_policy,
     set_seed,
     short,
-    strokes_to_image,
+    strokes_to_images,
+    rollout_batch,
 )
 from rl_events import EVENTS_NAME, EventLog, pack_draws
 
@@ -65,7 +66,7 @@ def parse_args(argv=None):
     )
     add_policy_args(parser, default_save="models/rl-trocr.pth")
     parser.add_argument("--batch", type=int, default=4, help="Prompts per update.")
-    parser.add_argument("-k", type=int, default=2,
+    parser.add_argument("-k", type=int, default=8,
                         help="Draws per prompt. The baseline is that prompt's mean reward.")
     # Phase 6 integration point. vCER is the training default; exp/linear/soft stay available.
     parser.add_argument("--reward", choices=("vcer", "exp", "linear", "soft"), default="vcer",
@@ -77,6 +78,11 @@ def parse_args(argv=None):
                         help="Longest substitution span in the visual distance. 1, 2, or 3.")
     parser.add_argument("--vcer-table", default=None,
                         help="Cost table JSON. Default: vcer/table.json.")
+    parser.add_argument("--confidence", type=float, default=0.2,
+                        help="Share of the reward taken from TrOCR's token confidence. "
+                             "High confidence raises the reward when CER is low and lowers "
+                             "it when CER is high. 0 leaves the string score unchanged. "
+                             "Requires --beams 1.")
     parser.add_argument("--tau", type=float, default=0.1,
                         help="CER forgiven outright by --reward soft.")
     parser.add_argument("--reward-model", default="microsoft/trocr-large-handwritten")
@@ -93,6 +99,16 @@ def parse_args(argv=None):
                              f"already stored for this run, or {DEFAULT_REVIEW!r}.")
     parser.add_argument("--review-k", type=int, default=10,
                         help="Draws of --review-text on each checkpoint sheet.")
+    parser.add_argument("--temp-min", type=float, default=0.1,
+                        help="Lowest temperature. Draws come from a normal centered on the "
+                             "midpoint of this and --temp-max; values outside are dropped. "
+                             "0 draws the mode and stays out of the gradient.")
+    parser.add_argument("--temp-max", type=float, default=0.9,
+                        help="Highest temperature. The default range keeps most drawings near 0.5. "
+                             "The log-prob uses the value that drawing was sampled at.")
+    parser.add_argument("--sample-every", type=int, default=5,
+                        help="Save a sheet of the training prompts every this many updates. "
+                             "0 saves none. The fixed review sentence is still drawn at each checkpoint.")
     parser.add_argument("--sheet-dir", default="samples/rl")
     parser.add_argument("--no-open", action="store_true",
                         help="Save each review sheet without opening it.")
@@ -219,59 +235,129 @@ def _text_stats(hyps):
     return thin, length
 
 
+def label_reward_order(refs, rewards):
+    """Labels stay in first-seen order. Draws of one label go by reward, high first."""
+    first = {}
+    for index, ref in enumerate(refs):
+        first.setdefault(ref, index)
+
+    def key(index):
+        reward = rewards[index]
+        rank = -(reward if reward is not None else float("-inf"))
+        return (first[refs[index]], rank, index)
+
+    return sorted(range(len(refs)), key=key)
+
+
+def save_sample_images(images, directory, update_no, max_h=160):
+    """One preview PNG per drawing, named gen-NNNNNN-II.png, in sample order."""
+    from PIL import Image
+
+    directory = Path(directory)
+    directory.mkdir(parents=True, exist_ok=True)
+    resample = getattr(Image, "Resampling", Image).LANCZOS
+    names = []
+    for index, image in enumerate(images):
+        preview = image
+        if image.height > max_h:
+            scale = max_h / image.height
+            preview = image.resize(
+                (max(1, int(image.width * scale)), max_h), resample)
+        name = f"gen-{update_no:06d}-{index:02d}.png"
+        preview.save(directory / name)
+        names.append(name)
+    return names
+
+
+def save_training_sheet(images, refs, hyps, cers, rewards, path, update_no):
+    """One contact sheet of the prompts this update actually trained on."""
+    order = label_reward_order(refs, rewards)
+    images = [images[i] for i in order]
+    refs = [refs[i] for i in order]
+    hyps = [hyps[i] for i in order]
+    cers = [cers[i] for i in order]
+    rewards = [rewards[i] for i in order]
+    captions = [
+        f"{short(ref, 40)}   reward {reward:.3f}   cer {cer:.2f}   {short(hyp, 32)}"
+        for ref, hyp, cer, reward in zip(refs, hyps, cers, rewards)
+    ]
+    sheet = consistency_sheet(images, f"update {update_no}   training samples", captions)
+    path = Path(path)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    sheet.save(path)
+    return path.name
+
+
 def one_update(model, ref, scorer, optimizer, prompts, stoi, std, device, args, ema,
-               log=None, update_no=None, block=None):
+               log=None, update_no=None, block=None, sheet_path=None):
     """One on-policy update: `batch` sentences, `k` draws each."""
     chosen = pick_prompts(prompts, args.batch)
-    rollouts = []
+    texts = []
     for text in chosen:
         print(f"    {text!r}", flush=True)
-        for draw in range(args.k):
-            seq = rollout(model, text, stoi, device, args.temperature, args.sharpen)
-            rollouts.append({"text": text, "seq": seq})
-            print(f"      draw {draw + 1}/{args.k}  ({seq.shape[0]} steps)", flush=True)
-            if log is not None:
-                log.write({
-                    "type": "draw",
-                    "update": update_no,
-                    "block": block,
-                    "text": text,
-                    "draw": draw + 1,
-                    "k": args.k,
-                    "steps": int(seq.shape[0]),
-                })
-    images = [strokes_to_image(item["seq"].numpy(), std) for item in rollouts]
+        texts.extend([text] * args.k)
+    temperatures = draw_temperatures(len(texts), args.temp_min, args.temp_max)
+    print(f"    drawing {len(texts)} lines in one batch", flush=True)
+    sequences = rollout_batch(
+        model, texts, stoi, device, temperatures, args.sharpen)
+    rollouts = []
+    for index, (text, seq, temp) in enumerate(zip(texts, sequences, temperatures)):
+        draw = index % args.k + 1
+        rollouts.append({"text": text, "seq": seq, "temperature": temp})
+        print(f"      draw {draw}/{args.k}  temp {temp:.2f}  ({seq.shape[0]} steps)", flush=True)
+        if log is not None:
+            log.write({
+                "type": "draw",
+                "update": update_no,
+                "block": block,
+                "text": text,
+                "draw": draw,
+                "k": args.k,
+                "temperature": temp,
+                "steps": int(seq.shape[0]),
+            })
+    images = strokes_to_images([item["seq"] for item in rollouts], std)
     refs = [item["text"] for item in rollouts]
     rewards, cers, hyps = scorer.score(images, refs)
     wcors = _wcer_list(scorer, len(hyps))
+    confs = getattr(scorer, "last_confidence", None)
     advs, ema = advantages(rewards, args.k, ema)
     stats = reinforce_step(
         model, ref, rollouts, advs, stoi, device,
         args.temperature, args.sharpen, args.kl, optimizer, args.clip,
     )
+    image_names = []
+    if sheet_path is not None:
+        image_names = save_sample_images(images, sheet_path.parent, update_no)
     draws = pack_draws(
         refs,
         [int(item["seq"].shape[0]) for item in rollouts],
-        rewards, cers, hyps, advs, stats.get("traces"), wcors,
+        rewards, cers, hyps, advs, stats.get("traces"), wcors, confs,
+        [item["temperature"] for item in rollouts],
+        image_names,
     )
-    return stats, rewards, cers, hyps, refs, ema, draws, wcors
+    sheet_name = image_names[0] if image_names else None
+    return stats, rewards, cers, hyps, refs, ema, draws, wcors, sheet_name
 
 
 def write_review(model, scorer, text, stoi, std, device, args, index, out_dir):
     """Draw the fixed sentence `review_k` times from the weights just saved."""
-    images, cers, hyps = [], [], []
     print(f"  review {text!r} x {args.review_k}", flush=True)
-    sequences = []
-    for draw in range(args.review_k):
-        seq = rollout(model, text, stoi, device, args.temperature, args.sharpen)
-        sequences.append(seq)
-        print(f"    draw {draw + 1}/{args.review_k}  ({seq.shape[0]} steps)", flush=True)
-    images = [strokes_to_image(seq.numpy(), std) for seq in sequences]
+    temperatures = draw_temperatures(args.review_k, args.temp_min, args.temp_max)
+    sequences = rollout_batch(
+        model, [text] * args.review_k, stoi, device, temperatures, args.sharpen)
+    for draw, (seq, temp) in enumerate(zip(sequences, temperatures), start=1):
+        print(f"    draw {draw}/{args.review_k}  temp {temp:.2f}  ({seq.shape[0]} steps)", flush=True)
+    images = strokes_to_images(sequences, std)
     rewards, cers, hyps = scorer.score(images, [text] * len(images))
     wcors = _wcer_list(scorer, len(hyps))
+    confs = list(getattr(scorer, "last_confidence", None) or [])
     for i, (cer, hyp, reward, wcer) in enumerate(zip(cers, hyps, rewards, wcors), start=1):
         extra = "" if wcer is None else f"  wcer {wcer:.3f}"
-        print(f"    {i:2d}  cer {cer:.2f}{extra}  reward {reward:.3f}  -> {short(hyp)!r}", flush=True)
+        conf = confs[i - 1] if i - 1 < len(confs) else None
+        conf_bit = "" if conf is None else f"  conf {conf:.2f}"
+        print(f"    {i:2d}  cer {cer:.2f}{extra}{conf_bit}  reward {reward:.3f}  -> {short(hyp)!r}",
+              flush=True)
     mean_c = sum(cers) / len(cers)
     mean_r = sum(rewards) / len(rewards)
     present = [value for value in wcors if value is not None]
@@ -302,20 +388,27 @@ def write_review(model, scorer, text, stoi, std, device, args, index, out_dir):
             {
                 "text": text,
                 "steps": int(seq.shape[0]),
+                "temperature": temperatures[i],
                 "cer": cer,
                 "wcer": wcer,
+                "confidence": confs[i] if i < len(confs) else None,
                 "reward": reward,
                 "hyp": hyp,
             }
-            for seq, cer, wcer, reward, hyp in zip(sequences, cers, wcors, rewards, hyps)
+            for i, (seq, cer, wcer, reward, hyp) in enumerate(
+                zip(sequences, cers, wcors, rewards, hyps))
         ],
     }
 
 
 def main():
     args = parse_args()
-    if args.temperature <= 0:
-        raise SystemExit("--temperature must be > 0 (0 has no density to reinforce)")
+    if args.temp_min < 0 or args.temp_max < 0:
+        raise SystemExit("--temp-min and --temp-max must be >= 0")
+    if args.temp_max < args.temp_min:
+        raise SystemExit("--temp-max must be >= --temp-min")
+    if args.temp_max <= 0:
+        raise SystemExit("--temp-max must be > 0 so some drawings have a density")
     if args.k < 1 or args.batch < 1:
         raise SystemExit("--k and --batch must be >= 1")
     if args.review_k < 1:
@@ -328,6 +421,12 @@ def main():
         raise SystemExit("--vcer-alpha must be between 0 and 1")
     if args.reward == "vcer" and args.vcer_k not in (1, 2, 3):
         raise SystemExit("--vcer-k must be 1, 2, or 3")
+    if not 0.0 <= args.confidence <= 1.0:
+        raise SystemExit("--confidence must be between 0 and 1")
+    if args.confidence > 0 and args.beams != 1:
+        raise SystemExit("--confidence needs greedy decoding (--beams 1)")
+    if args.sample_every < 0:
+        raise SystemExit("--sample-every must be >= 0")
     if args.min_chars > args.max_chars:
         raise SystemExit("--min-chars cannot exceed --max-chars")
 
@@ -360,8 +459,11 @@ def main():
         print("sampler on cpu (one pen step at a time is faster there); TrOCR on mps",
               flush=True)
     print(f"KL anchor: {args.ref}", flush=True)
-    print(f"updates: {args.batch} sentences x {args.k} draws   "
+    print(f"updates: {args.batch} sentences x {args.k} draws, sampled in one batch   "
           f"then a checkpoint about every {args.block_minutes:g} min", flush=True)
+    print(f"temperature: normal around {(args.temp_min + args.temp_max) / 2:g}, "
+          f"kept inside {args.temp_min:g} to {args.temp_max:g}",
+          flush=True)
     print(f"latest -> {args.save}", flush=True)
     print(f"numbered checkpoints and review sheets -> {out_dir}/ckpt-NNNN.pth and .png",
           flush=True)
@@ -385,11 +487,12 @@ def main():
             rdev,
             model_name=args.reward_model, kind=args.reward, tau=args.tau, beams=args.beams,
             vcer_alpha=args.vcer_alpha, vcer_k=args.vcer_k, vcer_table=args.vcer_table,
+            confidence_weight=args.confidence,
         )
         if scorer.vcer_config:
             cfg = scorer.vcer_config
             print(f"vCER alpha {cfg['alpha']}  k {cfg['k']}  table {cfg['hash']}  "
-                  f"prompts {args.prompts}", flush=True)
+                  f"confidence {args.confidence:g}  prompts {args.prompts}", flush=True)
         optimizer = torch.optim.Adam(model.parameters(), lr=args.lr)
         sidecar = load_sidecar(sidecar_for(ckpt, out_dir))
         ema = None
@@ -425,9 +528,12 @@ def main():
             "tau": args.tau,
             "prompts_file": args.prompts,
             "vcer": scorer.vcer_config,
+            "confidence_weight": args.confidence,
             "batch": args.batch,
             "k": args.k,
-            "temperature": args.temperature,
+            "temperature_min": args.temp_min,
+            "temperature_max": args.temp_max,
+            "temperature_distribution": "normal",
             "sharpen": args.sharpen,
             "kl_coef": args.kl,
             "lr": args.lr,
@@ -449,9 +555,15 @@ def main():
                 started = time.monotonic()
                 block_updates = 0
                 while True:
-                    stats, rewards, cers, hyps, refs, ema, draws, wcors = one_update(
+                    upcoming = updates + 1
+                    sheet_path = None
+                    if args.sample_every > 0 and upcoming % args.sample_every == 0:
+                        sheet_path = out_dir / f"gen-{upcoming:06d}.png"
+                    stats, rewards, cers, hyps, refs, ema, draws, wcors, sheet_name = one_update(
                         model, ref, scorer, optimizer, prompts, stoi, std, device, args, ema,
-                        log=log, update_no=updates + 1, block=index)
+                        log=log, update_no=upcoming, block=index, sheet_path=sheet_path)
+                    if sheet_name:
+                        print(f"  samples {sheet_name}", flush=True)
                     updates += 1
                     block_updates += 1
                     elapsed = (time.monotonic() - started) / 60.0
@@ -460,11 +572,16 @@ def main():
                     present = [value for value in wcors if value is not None]
                     wcer_mean = sum(present) / len(present) if present else None
                     thin, hyp_len = _text_stats(hyps)
+                    confs = [item.get("confidence") for item in draws]
+                    confs = [value for value in confs if value is not None]
+                    conf_mean = sum(confs) / len(confs) if confs else None
                     wcer_bit = "" if wcer_mean is None else f"wcer {wcer_mean:.3f}  "
+                    conf_bit = "" if conf_mean is None else f"conf {conf_mean:.2f}  "
                     print(f"  update {updates}  {elapsed:.1f} min  "
                           f"reward {reward_mean:.3f}  "
                           f"cer {cer_mean:.3f}  "
                           f"{wcer_bit}"
+                          f"{conf_bit}"
                           f"kl {stats['kl']:.4f}  "
                           f"loss {stats['loss']:.4f}  grad {stats['grad']:.3f}  "
                           f"{refs[0]!r} -> {short(hyps[0])!r}",
@@ -481,6 +598,7 @@ def main():
                         "cer_min": min(cers),
                         "cer_max": max(cers),
                         "wcer_mean": wcer_mean,
+                        "confidence_mean": conf_mean,
                         "wcer_min": min(present) if present else None,
                         "wcer_max": max(present) if present else None,
                         "hyp_len_mean": hyp_len,
@@ -494,6 +612,7 @@ def main():
                             sum(item["steps"] for item in draws) / len(draws) if draws else None
                         ),
                         "example": {"text": refs[0], "hyp": hyps[0]},
+                        "sheet": sheet_name,
                         "draws": draws,
                     })
                     if elapsed * 60.0 >= args.block_minutes * 60.0:

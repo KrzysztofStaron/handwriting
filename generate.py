@@ -39,6 +39,38 @@ def default_device():
     return "cpu"
 
 
+def stop_after_point(reached_end_at, pen_up, phi_end, phi_max, t, min_steps, tail_steps):
+    """Paper stop, after this point is already kept.
+
+    reached_end_at stays None until phi at the phantom position beats every
+    real character. That trigger waits until min_steps. Then the current stroke
+    finishes: stop when the pen lifts, or after tail_steps if it never does.
+    """
+    if reached_end_at is None and t >= min_steps and phi_end > phi_max:
+        reached_end_at = t
+    done = reached_end_at is not None and (
+        pen_up == 1.0 or t - reached_end_at >= tail_steps
+    )
+    return reached_end_at, done
+
+
+def stop_rows(reached, take, pen_up, phi_end, phi_max, t, min_steps, tail_steps):
+    """Vector form of stop_after_point. reached is -1 until the trigger.
+
+    take is false for a row whose point was not kept this step. Those rows
+    are left unchanged. done is true only for a kept point that should end
+    the trajectory.
+    """
+    step_reached = reached.clone()
+    arm = take & (step_reached < 0) & (t >= min_steps) & (phi_end > phi_max)
+    step_reached = torch.where(arm, torch.full_like(step_reached, t), step_reached)
+    done = take & (step_reached >= 0) & (
+        (pen_up == 1.0) | ((t - step_reached) >= tail_steps)
+    )
+    reached = torch.where(take, step_reached, reached)
+    return reached, done
+
+
 def sample_iter(model, text, stoi, device, temperature=1.0, max_steps=None,
                 steps_per_char=50, tail_steps=12, min_steps=20, window_sharpen=2.0):
     """Generator core: yield one pen point at a time as it is drawn.
@@ -52,16 +84,15 @@ def sample_iter(model, text, stoi, device, temperature=1.0, max_steps=None,
     flat cap that silently clips long sentences. Real data runs ~22 steps/char (p95
     ~31), so steps_per_char=50 leaves comfortable headroom for any input.
 
-    Stopping -- the paper's criterion (sec. 5.3), a TRIGGER then a short GRACE:
-      - Trigger: phi at the phantom position U+1 (one past the last char) outweighs
-        phi at EVERY real char -- i.e. the soft window has slid off the end of the
-        text, so the model is done. This is the model's own alignment telling us it
-        has finished; there is no learned end-of-sequence flag. Armed after min_steps
-        so the window passing through char 0 at the very start can't trip it.
-      - Grace: we then draw tail_steps MORE before stopping, because the window clears
-        the last char slightly before its final strokes are drawn; without it the last
-        letter can be clipped. Kept small since this trigger fires later (window fully
-        PAST the end) than attention merely arriving on the last char.
+    Stopping -- the paper's criterion (sec. 5.3), a TRIGGER then the end of the stroke:
+      - Trigger: phi at the phantom position U (one past the last char, which sits
+        at U-1) outweighs phi at EVERY real char. The soft window has slid off the
+        text. Armed after min_steps so the window passing char 0 at the start can't
+        trip it.
+      - Then finish the stroke that is already on the page and stop when the pen
+        lifts. A fixed tail of 12 steps kept drawing after that lift, and the start
+        of the next character was read as a period, comma, or exclamation mark.
+        tail_steps is only the cap for a pen that never lifts.
     """
     # re-sharpen the soft window (beta scaling) to stop attention smearing across
     # characters late in long words; see model.compute_window. 2.0 is the sweet spot.
@@ -120,13 +151,12 @@ def sample_iter(model, text, stoi, device, temperature=1.0, max_steps=None,
             x = torch.tensor([[[dx, dy, pen_up]]]).to(device)    # feed the point back
             yield dx, dy, pen_up, phi.cpu().numpy()
 
-            # --- stopping (paper sec. 5.3) ---
-            # Trigger: phi at the phantom position U+1 outweighs phi at every real
-            # char -- the window has slid off the end of the text. Then draw a short
-            # grace (tail_steps) so the last letter's strokes finish.
-            if reached_end_at is None and t >= min_steps and phi_end > phi.max().item():
-                reached_end_at = t
-            if reached_end_at is not None and t - reached_end_at >= tail_steps:
+            # Stop once the window has slid off the text, but only after the pen
+            # lifts, so the last letter finishes and the next character never starts.
+            # tail_steps caps a pen that stays down.
+            reached_end_at, done = stop_after_point(
+                reached_end_at, pen_up, phi_end, float(phi.max()), t, min_steps, tail_steps)
+            if done:
                 break
 
 
@@ -147,6 +177,118 @@ def sample(model, text, stoi, device, temperature=1.0, max_steps=None,
         pts.append([dx, dy, pen_up])
         phis.append(phi)
     return torch.tensor(pts), np.array(phis)
+
+
+def _temperature_list(temperature, count):
+    """One float per row. A single number is used for every row."""
+    if isinstance(temperature, (int, float)):
+        values = [float(temperature)] * count
+    else:
+        values = [float(value) for value in temperature]
+    if len(values) != count:
+        raise ValueError(f"expected {count} temperatures, got {len(values)}")
+    return values
+
+
+def sample_batch(model, texts, stoi, device, temperature=1.0, max_steps=None,
+                 steps_per_char=50, tail_steps=12, min_steps=20, window_sharpen=2.0):
+    """Sample one trajectory per text in one autoregressive loop.
+
+    `temperature` is a float, or one float per text. Each row uses that
+    temperature, the shared sharpen, and the same stop rule as sample().
+    Temperature 0 draws the mode. A row that has already stopped stays in the
+    batch so the others can keep stepping, and its later points are discarded.
+    Returns a list of (T, 3) CPU tensors, one per text.
+    """
+    if not texts:
+        return []
+    for text in texts:
+        missing = [ch for ch in text if ch not in stoi]
+        if missing:
+            raise ValueError(f"text has characters outside the vocab: {sorted(set(missing))}")
+
+    model.window_sharpen = window_sharpen
+    lengths = [len(text) for text in texts]
+    count = len(texts)
+    temperatures = _temperature_list(temperature, count)
+    width = max(lengths)
+    vocab = len(stoi)
+    if max_steps is None:
+        budgets = [400 + steps_per_char * n for n in lengths]
+    else:
+        budgets = [int(max_steps)] * count
+    limit = max(budgets)
+
+    c = torch.zeros(count, width, vocab, device=device)
+    c_mask = torch.zeros(count, width, device=device)
+    for i, text in enumerate(texts):
+        index = torch.tensor([stoi[ch] for ch in text], dtype=torch.long, device=device)
+        c[i, torch.arange(lengths[i], device=device), index] = 1.0
+        c_mask[i, :lengths[i]] = 1.0
+
+    x = torch.zeros(count, 1, 3, device=device)
+    hidden = None
+    active = torch.ones(count, dtype=torch.bool)
+    reached = torch.full((count,), -1, dtype=torch.long)
+    budget = torch.tensor(budgets, dtype=torch.long)
+    points = [[] for _ in range(count)]
+    row_temp = torch.tensor(temperatures, dtype=torch.float32, device=device)
+
+    with torch.no_grad():
+        for t in range(limit):
+            take = active & (t < budget)
+            if not bool(take.any()):
+                break
+            out, hidden, phi, phi_end = model(x, c, c_mask, hidden)
+            pi, mu_x, mu_y, sig_x, sig_y, rho, pen = split_params(out)
+            pi, mu_x, mu_y = pi[:, 0], mu_x[:, 0], mu_y[:, 0]
+            sig_x, sig_y, rho, pen = sig_x[:, 0], sig_y[:, 0], rho[:, 0], pen[:, 0]
+            temps = row_temp.to(dtype=pi.dtype)
+            cold = temps <= 0
+            bias = torch.zeros(count, dtype=pi.dtype, device=device)
+            warm = ~cold
+            if bool(warm.any()):
+                bias[warm] = -torch.log(temps[warm])
+            probs = torch.softmax(torch.log(pi.clamp_min(1e-12)) * (1.0 + bias.unsqueeze(-1)), dim=-1)
+            choice = torch.multinomial(probs, 1).squeeze(-1)
+            if bool(cold.any()):
+                choice = torch.where(cold, torch.argmax(pi, dim=-1), choice)
+            sigma_scale = torch.where(cold, torch.zeros_like(temps), temps)
+            picked = choice.view(count, 1)
+            mx = mu_x.gather(1, picked).squeeze(1)
+            my = mu_y.gather(1, picked).squeeze(1)
+            sx = sig_x.gather(1, picked).squeeze(1) * sigma_scale
+            sy = sig_y.gather(1, picked).squeeze(1) * sigma_scale
+            corr = rho.gather(1, picked).squeeze(1)
+            u1 = torch.randn(count, device=device)
+            u2 = torch.randn(count, device=device)
+            dx = mx + sx * u1
+            dy = my + sy * (corr * u1 + torch.sqrt((1.0 - corr * corr).clamp_min(1e-8)) * u2)
+            pen_up = (torch.rand(count, device=device) < pen).float()
+            step = torch.stack([dx, dy, pen_up], dim=-1)
+            moved = torch.cat([
+                step,
+                phi_end[:, 0].unsqueeze(1),
+                phi[:, 0].amax(dim=-1).unsqueeze(1),
+            ], dim=1).detach().cpu()
+            take = take.cpu()
+            for i in range(count):
+                if bool(take[i]):
+                    points[i].append(moved[i, :3].clone())
+            reached, done = stop_rows(
+                reached, take, moved[:, 2], moved[:, 3], moved[:, 4],
+                t, min_steps, tail_steps)
+            active = active & ~done & ((t + 1) < budget)
+            x = step.view(count, 1, 3)
+            if count > 1 and t > 0 and t % 200 == 0:
+                print(f"      step {t}  finished {int((~active).sum())}/{count}", flush=True)
+
+    sequences = []
+    for text, pts in zip(texts, points):
+        if not pts:
+            raise RuntimeError(f"model produced an empty trajectory for {text!r}")
+        sequences.append(torch.stack(pts, dim=0))
+    return sequences
 
 
 def save_plot(seq, std, path, title):

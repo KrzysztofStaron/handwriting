@@ -5,6 +5,7 @@ are experiment runs and are not the base model.
 """
 
 import math
+import random
 import sys
 import tempfile
 import unittest
@@ -15,8 +16,8 @@ import torch
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-from generate import load_model, sample
-from model import M, sequence_loss
+from generate import load_model, sample, sample_batch, stop_after_point, stop_rows
+from model import M, HandwritingModel, sequence_loss
 from rl import (
     BASE_CKPT,
     advantages,
@@ -33,6 +34,8 @@ from rl import (
     step_logprob,
     strokes_to_image,
     trajectory_logprob,
+    trajectory_logprobs,
+    draw_temperatures,
     reinforce_loss,
 )
 
@@ -187,12 +190,62 @@ class ScorerTests(unittest.TestCase):
         scorer = TrocrScorer.__new__(TrocrScorer)
         scorer.kind = "linear"
         scorer.tau = 0.1
-        scorer.read = lambda images: ["hi", "hx"]
+        scorer.read = lambda images, max_new_tokens=64: ["hi", "hx"]
         rewards, cers, hyps = scorer.score([None, None], ["hi", "hi"])
         self.assertEqual(hyps, ["hi", "hx"])
         self.assertEqual(cers, [0.0, 0.5])
         self.assertAlmostEqual(rewards[0], 1.0)
         self.assertAlmostEqual(rewards[1], 0.5)
+
+    def test_confidence_is_the_geometric_mean_of_chosen_tokens(self):
+        import torch
+        from rl import mix_confidence, token_confidence
+        # Vocab of 2. Token 1 is certain in the first step and a coin flip in the second.
+        sure = torch.tensor([[0.0, 20.0]])
+        coin = torch.tensor([[0.0, 0.0]])
+        sequences = torch.tensor([[0, 1, 1]])
+        both = token_confidence((sure, coin), sequences, skip_ids={0})[0]
+        only_sure = token_confidence((sure,), sequences[:, :2], skip_ids={0})[0]
+        self.assertGreater(only_sure, 0.99)
+        self.assertAlmostEqual(both, only_sure ** 0.5 * 0.5 ** 0.5, places=5)
+        self.assertEqual(token_confidence((sure,), sequences[:, :2], skip_ids={0, 1}), [0.0])
+        self.assertAlmostEqual(mix_confidence(1.0, 0.5, 0.2, cer=0.0), 0.9)
+        self.assertAlmostEqual(mix_confidence(1.0, 0.5, 0.0, cer=1.0), 1.0)
+        close = mix_confidence(1.0, 1.0, 0.2, cer=0.0)
+        unsure_close = mix_confidence(1.0, 0.0, 0.2, cer=0.0)
+        wrong = mix_confidence(0.0, 1.0, 0.2, cer=1.0)
+        unsure_wrong = mix_confidence(0.0, 0.0, 0.2, cer=1.0)
+        self.assertGreater(close, unsure_close)
+        self.assertLess(wrong, unsure_wrong)
+        self.assertAlmostEqual(mix_confidence(0.5, 1.0, 0.2, cer=0.5), 0.4)
+
+    def test_score_mixes_in_a_stashed_confidence(self):
+        from rl import TrocrScorer
+        scorer = TrocrScorer.__new__(TrocrScorer)
+        scorer.kind = "linear"
+        scorer.tau = 0.1
+        scorer.confidence_weight = 0.25
+
+        def fake_read(images, max_new_tokens=64):
+            scorer.last_confidence = [1.0, 0.0]
+            return ["hi", "hx"]
+
+        scorer.read = fake_read
+        rewards, cers, hyps = scorer.score([None, None], ["hi", "hi"])
+        self.assertEqual(cers, [0.0, 0.5])
+        self.assertAlmostEqual(rewards[0], 1.0)
+        self.assertAlmostEqual(rewards[1], 0.375)
+
+        def fake_wrong(images, max_new_tokens=64):
+            scorer.last_confidence = [1.0, 0.0]
+            return ["no", "no"]
+
+        scorer.read = fake_wrong
+        rewards, cers, hyps = scorer.score([None, None], ["hi", "hi"])
+        self.assertEqual(cers, [1.0, 1.0])
+        self.assertAlmostEqual(rewards[0], -0.25)
+        self.assertAlmostEqual(rewards[1], 0.0)
+        self.assertLess(rewards[0], rewards[1])
 
 
 class CheckpointTests(unittest.TestCase):
@@ -230,6 +283,145 @@ class CheckpointTests(unittest.TestCase):
             write_json(path, {"review_text": "old man"})
             self.assertEqual(resolve_review_text(None, path, stoi), "old man")
             self.assertEqual(resolve_review_text("the man", path, stoi), "the man")
+
+
+class BatchTests(unittest.TestCase):
+    def test_stop_rows_match_the_scalar_rule(self):
+        torch.manual_seed(0)
+        reached = torch.full((6,), -1)
+        take = torch.tensor([True, True, True, False, True, True])
+        pen = torch.tensor([0.0, 1.0, 0.0, 1.0, 1.0, 0.0])
+        phi_end = torch.tensor([0.2, 0.9, 0.1, 5.0, 0.4, 0.8])
+        phi_max = torch.tensor([0.5, 0.3, 0.4, 0.0, 0.4, 0.2])
+        scalar = []
+        for i in range(6):
+            if not bool(take[i]):
+                scalar.append((None, False))
+                continue
+            scalar.append(stop_after_point(
+                None, float(pen[i]), float(phi_end[i]), float(phi_max[i]),
+                3, min_steps=2, tail_steps=4))
+        new_reached, done = stop_rows(reached, take, pen, phi_end, phi_max, 3, 2, 4)
+        for i, (when, ended) in enumerate(scalar):
+            if not bool(take[i]):
+                self.assertEqual(int(new_reached[i]), -1)
+                self.assertFalse(bool(done[i]))
+                continue
+            self.assertEqual(int(new_reached[i]), -1 if when is None else when)
+            self.assertEqual(bool(done[i]), ended)
+
+    def test_padded_phantom_stays_on_the_real_last_character(self):
+        model = HandwritingModel(vocab_size=5)
+        h1 = torch.randn(2, model.hidden_size)
+        kappa = torch.zeros(2, 10)
+        chars = torch.zeros(2, 4, 5)
+        mask = torch.zeros(2, 4)
+        mask[0, :2] = 1.0
+        mask[1, :] = 1.0
+        _, _, phi, phi_end = model.compute_window(h1, chars, mask, kappa)
+        _, _, phi_short, end_short = model.compute_window(
+            h1[:1], chars[:1, :2], mask[:1, :2], kappa[:1])
+        self.assertTrue(torch.allclose(phi_end[:1], end_short))
+        self.assertTrue(torch.allclose(phi[:1, :2], phi_short))
+
+    def test_batched_logprob_matches_one_row(self):
+        torch.manual_seed(1)
+        model = HandwritingModel(vocab_size=5).eval()
+        stoi = {ch: i for i, ch in enumerate("abcde")}
+        seqs = [torch.randn(6, 3), torch.randn(3, 3)]
+        texts = ["ab", "abcde"]
+        singles = [
+            trajectory_logprob(model, seq, text, stoi, "cpu", 0.5, 2.0)
+            for seq, text in zip(seqs, texts)
+        ]
+        totals, lengths = trajectory_logprobs(
+            model, seqs, texts, stoi, "cpu", 0.5, 2.0)
+        for index, (logp, length) in enumerate(singles):
+            self.assertTrue(torch.allclose(totals[index], logp, rtol=1e-4, atol=1e-4))
+            self.assertEqual(int(lengths[index]), int(length))
+
+    def test_each_drawing_gets_a_temperature_in_range(self):
+        random_state = random.getstate()
+        random.seed(0)
+        try:
+            temps = draw_temperatures(4000, 0.1, 0.9)
+        finally:
+            random.setstate(random_state)
+        self.assertEqual(len(temps), 4000)
+        self.assertTrue(all(0.1 <= value <= 0.9 for value in temps))
+        mean = sum(temps) / len(temps)
+        self.assertAlmostEqual(mean, 0.5, delta=0.01)
+        near = sum(0.4 <= value <= 0.6 for value in temps) / len(temps)
+        self.assertGreater(near, 0.8)
+        tails = sum(value < 0.35 or value > 0.65 for value in temps) / len(temps)
+        self.assertLess(tails, 0.05)
+        self.assertEqual(draw_temperatures(3, 0.4, 0.4), [0.4, 0.4, 0.4])
+        self.assertEqual(draw_temperatures(0, 0.1, 0.9), [])
+
+    def test_mixed_temperatures_match_one_row_at_a_time(self):
+        torch.manual_seed(1)
+        model = HandwritingModel(vocab_size=5).eval()
+        stoi = {ch: i for i, ch in enumerate("abcde")}
+        seqs = [torch.randn(6, 3), torch.randn(3, 3)]
+        texts = ["ab", "abcde"]
+        temps = [0.3, 0.7]
+        singles = [
+            trajectory_logprob(model, seq, text, stoi, "cpu", temp, 2.0)
+            for seq, text, temp in zip(seqs, texts, temps)
+        ]
+        totals, lengths = trajectory_logprobs(
+            model, seqs, texts, stoi, "cpu", 0.5, 2.0, temperatures=temps)
+        for index, (logp, length) in enumerate(singles):
+            self.assertTrue(torch.allclose(totals[index], logp, rtol=1e-4, atol=1e-4))
+            self.assertEqual(int(lengths[index]), int(length))
+
+    def test_sample_batch_accepts_a_temperature_per_row(self):
+        torch.manual_seed(2)
+        model = HandwritingModel(vocab_size=4).eval()
+        stoi = {ch: i for i, ch in enumerate("abcd")}
+        seqs = sample_batch(
+            model, ["ab", "abcd"], stoi, "cpu", temperature=[0.0, 0.7],
+            max_steps=4, min_steps=4, tail_steps=0, window_sharpen=2.0,
+        )
+        self.assertEqual([tuple(seq.shape) for seq in seqs], [(4, 3), (4, 3)])
+        self.assertTrue(all(torch.isfinite(seq).all() for seq in seqs))
+
+    def test_zero_temperature_stays_out_of_the_gradient(self):
+        torch.manual_seed(3)
+        model = HandwritingModel(vocab_size=4)
+        ref = HandwritingModel(vocab_size=4)
+        ref.load_state_dict(model.state_dict())
+        for param in ref.parameters():
+            param.requires_grad_(False)
+        ref.eval()
+        stoi = {ch: i for i, ch in enumerate("abcd")}
+        rollouts = [
+            {"text": "ab", "seq": torch.randn(4, 3), "temperature": 0.0},
+            {"text": "ab", "seq": torch.randn(4, 3), "temperature": 0.4},
+        ]
+        before = model.fc.weight.detach().clone()
+        optimizer = torch.optim.Adam(model.parameters(), lr=1e-3)
+        stats = reinforce_step(
+            model, ref, rollouts, [1.0, -1.0], stoi, "cpu",
+            temperature=0.5, sharpen=1.0, kl_coef=0.0, optimizer=optimizer, clip=1.0,
+        )
+        self.assertEqual(stats["used"], 1)
+        self.assertEqual(stats["traces"][0]["skipped"], "zero_temperature")
+        self.assertIsNone(stats["traces"][1]["skipped"])
+        self.assertGreater(float((model.fc.weight.detach() - before).abs().sum()), 0.0)
+
+    def test_sample_batch_keeps_each_budget(self):
+        torch.manual_seed(2)
+        model = HandwritingModel(vocab_size=4).eval()
+        stoi = {ch: i for i, ch in enumerate("abcd")}
+        seqs = sample_batch(
+            model, ["ab", "abcd"], stoi, "cpu", temperature=0.5,
+            max_steps=4, min_steps=4, tail_steps=0, window_sharpen=2.0,
+        )
+        self.assertEqual(len(seqs), 2)
+        for seq in seqs:
+            self.assertEqual(tuple(seq.shape), (4, 3))
+            self.assertTrue(torch.isfinite(seq).all())
 
 
 class BaseModelTests(unittest.TestCase):

@@ -45,9 +45,11 @@ uv run python -m vcer.table_build.build
 | `--vcer-table` | `vcer/table.json` | versioned cost table |
 | `--prompts` | `data/romeo_juliet.txt` | line pool, sampled at random |
 
-Each vCER update logs plain CER, wCER, the reward spread, mean output length, and the share of thin glyphs `i l 1 . '`.
+Each vCER update logs plain CER, wCER, TrOCR token confidence, the reward spread, mean output length, and the share of thin glyphs `i l 1 . '`.
 
-Prompts are the whole of Romeo and Juliet (Project Gutenberg ebook 1513), cut on word boundaries into 8–32 character lines in the model alphabet. Repeated lines are kept once. The review sentence stays `the old man`, which is not in that file.
+TrOCR has no separate clarity score. In greedy decoding the confidence of a read is the geometric mean of the probabilities it assigned to the tokens it chose. `--confidence` (default 0.2) is that term's share of the reward. The term is confidence times `(1 - 2 * min(CER, 1))`, so high confidence raises the reward when the read is close and lowers it when the read is wrong. The rest stays the string score. `--confidence 0` turns it off. It needs `--beams 1`.
+
+Prompts are the whole of Romeo and Juliet (Project Gutenberg ebook 1513), cut on word boundaries into lines of 8–48 characters in the model alphabet. Repeated lines are kept once. The review sentence stays `the old man`, which is not in that file. `--max-chars` defaults to 48. TrOCR resizes every rendering to a 384-pixel square, and a longer line is squashed too thin to read.
 
 ```bash
 uv run python scripts/build_romeo_prompts.py   # needs /tmp/romeo_raw.txt

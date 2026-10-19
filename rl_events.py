@@ -60,7 +60,8 @@ class EventLog:
         self._handle.close()
 
 
-def pack_draws(texts, steps, rewards, cers, hyps, advantages, traces, wcers=None):
+def pack_draws(texts, steps, rewards, cers, hyps, advantages, traces, wcers=None,
+               confidences=None, temperatures=None, images=None):
     """One record per rollout, in sample order. Missing traces stay null."""
     traces = list(traces or [])
     rewards = list(rewards or [])
@@ -68,16 +69,24 @@ def pack_draws(texts, steps, rewards, cers, hyps, advantages, traces, wcers=None
     hyps = list(hyps or [])
     advantages = list(advantages or [])
     wcers = list(wcers or [])
+    confidences = list(confidences or [])
+    temperatures = list(temperatures or [])
+    images = list(images or [])
     draws = []
     for i, text in enumerate(texts):
         trace = traces[i] if i < len(traces) else {}
         draws.append(json_ready({
             "text": text,
             "steps": steps[i] if i < len(steps) else None,
+            "temperature": (
+                temperatures[i] if i < len(temperatures) else trace.get("temperature")
+            ),
             "reward": rewards[i] if i < len(rewards) else None,
             "cer": cers[i] if i < len(cers) else None,
             "wcer": wcers[i] if i < len(wcers) else None,
+            "confidence": confidences[i] if i < len(confidences) else None,
             "hyp": hyps[i] if i < len(hyps) else None,
+            "image": images[i] if i < len(images) else None,
             "advantage": advantages[i] if i < len(advantages) else trace.get("advantage"),
             "logp": trace.get("logp"),
             "kl": trace.get("kl"),
