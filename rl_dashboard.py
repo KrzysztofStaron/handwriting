@@ -17,7 +17,9 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import parse_qs, unquote, urlparse
 
-from rl_events import EVENTS_NAME, parse_stdout_log, read_events, write_events
+from rl_events import (
+    EVENTS_NAME, apply_run_aliases, load_run_aliases, parse_stdout_log, read_events, write_events,
+)
 
 PAGE = Path(__file__).with_name("rl_dashboard.html")
 VCER_PAGE = Path(__file__).with_name("vcer_dashboard.html")
@@ -61,6 +63,7 @@ class Handler(BaseHTTPRequestHandler):
                 self._send(400, "text/plain; charset=utf-8", b"offset must be an integer")
                 return
             events, next_offset, reset = read_events(self.directory / EVENTS_NAME, max(offset, 0))
+            apply_run_aliases(events, load_run_aliases(self.directory))
             payload = json.dumps({
                 "offset": next_offset,
                 "reset": reset,

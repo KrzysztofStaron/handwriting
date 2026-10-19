@@ -171,6 +171,27 @@ def read_events(path, offset=0):
     return events, len(lines), reset
 
 
+def apply_run_aliases(events, aliases):
+    """Rewrite `run` ids so a resumed process stays on the earlier series."""
+    if not aliases:
+        return events
+    for event in events:
+        run = event.get("run")
+        if run in aliases:
+            event["run"] = aliases[run]
+    return events
+
+
+def load_run_aliases(directory):
+    path = Path(directory) / "run_aliases.json"
+    if not path.is_file():
+        return {}
+    data = json.loads(path.read_text(encoding="utf-8"))
+    if not isinstance(data, dict):
+        raise ValueError(f"{path} must be an object of run id to run id")
+    return {str(key): str(value) for key, value in data.items()}
+
+
 def parse_stdout_log(text, run="imported"):
     """Recover events from a train_rl.py terminal log.
 

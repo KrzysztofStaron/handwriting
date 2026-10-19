@@ -324,6 +324,20 @@ class CheckpointTests(unittest.TestCase):
             (root / "latest.optim.pth").write_bytes(b"l")
             self.assertEqual(next_checkpoint_index(root), 3)
 
+    def test_run_alias_keeps_a_resume_on_the_earlier_series(self):
+        from rl_events import apply_run_aliases, load_run_aliases
+        events = [
+            {"run": "20261019-235110", "type": "update", "update": 2552},
+            {"run": "20261020-001005", "type": "update", "update": 2553},
+        ]
+        apply_run_aliases(events, {"20261020-001005": "20261019-235110"})
+        self.assertEqual([row["run"] for row in events], ["20261019-235110", "20261019-235110"])
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "run_aliases.json"
+            path.write_text('{"new": "old"}\n', encoding="utf-8")
+            self.assertEqual(load_run_aliases(tmp), {"new": "old"})
+            self.assertEqual(load_run_aliases(Path(tmp) / "missing"), {})
+
     def test_re_run_uses_latest_weights_when_present(self):
         from train_rl import default_policy_ckpt
         with tempfile.TemporaryDirectory() as tmp:
