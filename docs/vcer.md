@@ -49,7 +49,7 @@ uv run python -m vcer.table_build.build
 
 Each vCER update logs plain CER, wCER, TrOCR token confidence, the reward spread, mean output length, and the share of thin glyphs `i l 1 . '`.
 
-After that mix, a crooked line loses a little more. The left quarter and the right quarter of the ink each have a band from the 10th to the 90th percentile of height. The score is how far those two bands have moved apart, divided by the letter height. The middle quarter is compared with the ends in the same way, so an arch counts. A level line scores 0. The score stops at 1, and `--straightness` (default 0.05) is the most that can come off the reward. `--straightness 0` turns it off.
+After that mix, a crooked line loses a little more. The left quarter and the right quarter of the ink each have a band from the 10th to the 90th percentile of height. The score is how far those two bands have moved apart, divided by three letter heights. The middle quarter is compared with the ends in the same way, so an arch counts. A level line scores 0. One letter of tilt scores about 1/3, and the score reaches 1 at three letter heights. `--straightness` (default 0.05) is the most that can come off the reward. `--straightness 0` turns it off.
 
 Word spacing is logged on each drawing and is not part of the reward. `--spacing` defaults to 0.
 

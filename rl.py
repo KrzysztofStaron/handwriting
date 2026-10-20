@@ -356,14 +356,20 @@ def mix_confidence(reward, confidence, weight):
     return (1.0 - weight) * float(reward) + weight * float(confidence)
 
 
+# A shift of one letter height used to score 1, and real lines sat on that
+# cap. The same shift now scores 1/3. The score reaches 1 at three letter heights.
+STRAIGHTNESS_RANGE = 3.0
+
+
 def line_straightness(seq, std, side=0.25):
     """How far the writing on the right sits from the writing on the left. 0 is level.
 
     Each end is the band from the 10th to the 90th percentile of the ink there.
     The score is how far the right band has moved from the left band, divided
-    by the height of those bands. A small rise is a small score. The middle
-    band is compared with the two ends the same way, so an arch counts too.
-    The total stops at 1. A short or empty stroke scores 0.
+    by three times the height of those bands. A small rise is a small score.
+    The middle band is compared with the two ends the same way, so an arch
+    counts too. The total stops at 1, which is a shift of three letter heights.
+    A short or empty stroke scores 0.
     """
     if torch.is_tensor(seq):
         seq = seq.detach().cpu().numpy()
@@ -396,7 +402,7 @@ def line_straightness(seq, std, side=0.25):
             0.5 * (left[1] + right[1]),
         )
         arch = _band_shift(middle, ends) / height
-    return float(min(1.0, tilt + arch))
+    return float(min(1.0, (tilt + arch) / STRAIGHTNESS_RANGE))
 
 
 def _ink_band(xs, ys, x0, x1):

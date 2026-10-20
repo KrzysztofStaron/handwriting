@@ -58,7 +58,7 @@ TrOCR reads a 384×384 rendering. The default `--reward both` is
     - 0.05 * straightness
 ```
 
-Plain CER is case-sensitive Levenshtein over the normalized reference. vCER is the visual distance in `docs/vcer.md`: a lookalike such as `d`→`ol` costs less than a full edit. Confidence is the geometric mean of the probabilities on the tokens TrOCR chose. It never subtracts. Straightness compares the ink band at each end of the line, and the middle against the ends, so tilt and arch both count. `--straightness` 0.05 is the most a crooked line can lose.
+Plain CER is case-sensitive Levenshtein over the normalized reference. vCER is the visual distance in `docs/vcer.md`: a lookalike such as `d`→`ol` costs less than a full edit. Confidence is the geometric mean of the probabilities on the tokens TrOCR chose. It never subtracts. Straightness compares the ink band at each end of the line, and the middle against the ends, so tilt and arch both count. The shift is divided by three letter heights, so one letter of tilt scores about 1/3 and the score reaches 1 at three letter heights. `--straightness` 0.05 is the most a crooked line can lose.
 
 Word spacing is measured and logged. `--spacing` defaults to 0, so it is not in the score.
 

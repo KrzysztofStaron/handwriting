@@ -134,12 +134,16 @@ class StraightnessTests(unittest.TestCase):
         arched = line_straightness(_band_seq(xs, arch, arch + 10), std=1.0)
         tilted = line_straightness(_band_seq(xs, 0.025 * xs, 10 + 0.025 * xs), std=1.0)
         self.assertAlmostEqual(flat, 0.0, places=6)
-        self.assertLess(mild, 0.15)
-        self.assertGreater(arched, 0.4)
-        self.assertGreater(tilted, 0.5)
+        self.assertLess(mild, 0.05)
+        self.assertGreater(arched, 0.12)
+        self.assertLess(arched, 0.25)
+        self.assertGreater(tilted, arched)
+        self.assertLess(tilted, 0.4)
         self.assertEqual(line_straightness(np.zeros((3, 3)), std=1.0), 0.0)
         sunk = line_straightness(_band_seq(xs, np.where(xs < 300, 0.0, -10.0), np.where(xs < 300, 10.0, 0.0)), std=1.0)
-        self.assertGreater(sunk, 0.5)
+        self.assertAlmostEqual(sunk, 0.5, places=2)
+        deep = line_straightness(_band_seq(xs, np.where(xs < 300, 0.0, -30.0), np.where(xs < 300, 10.0, -20.0)), std=1.0)
+        self.assertEqual(deep, 1.0)
 
     def test_word_gap_penalty_ignores_a_small_wobble_and_gaps_inside_words(self):
         from rl import spacing_inconsistency

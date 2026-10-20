@@ -143,7 +143,7 @@ Both stages keep `models/best-4.pth` as a frozen KL anchor and never write that 
 | `linear` | `1 - CER` |
 | `soft` | `1` when CER is at or below `--tau` (default 0.1), then a straight fall to 0 at CER = 1 |
 
-A crooked line then loses a little more. The left quarter and the right quarter of the ink each have a band from the 10th to the 90th percentile. The score is how far the right band has moved from the left band, divided by the letter height, and the middle is compared with the ends the same way. A level line loses nothing. `--straightness` (default 0.05) is the most that penalty can subtract.
+A crooked line then loses a little more. The left quarter and the right quarter of the ink each have a band from the 10th to the 90th percentile. The score is how far the right band has moved from the left band, divided by three letter heights, and the middle is compared with the ends the same way. One letter of tilt scores about 1/3. The score reaches 1 at three letter heights. A level line loses nothing. `--straightness` (default 0.05) is the most that penalty can subtract.
 
 Word spacing is measured and shown in the sample table. It does not change the reward. `--spacing` defaults to 0.
 
