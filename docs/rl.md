@@ -72,7 +72,7 @@ The value of a pen state is the mean reward of the finished lines under it. A ch
 
 Around a fork, the advantage fades across 8 pen steps. The start of a chunk fades in from the parent advantage. The end of a chunk fades toward the mean of its children's advantages. A flat drawing has no neighbor, so every pen step keeps the same advantage.
 
-Temperature is drawn from a normal centered at 0.5, kept inside 0.1–0.9. The log-probability uses that drawing's temperature. A temperature of 0 is the mode: its reward still enters the baseline, and it stays out of the gradient.
+A root draws its temperature from a normal centered at 0.5, kept inside 0.1–0.9. Every fork of that root keeps the same temperature, so the change in value along a branch is the ink. Separate drawings each draw their own: a flat play group, a dictionary line, a novel line, and the review sentence. The log-probability uses the temperature the points were sampled at. A temperature of 0 is the mode: its reward still enters the baseline, and it stays out of the gradient.
 
 ## Update
 

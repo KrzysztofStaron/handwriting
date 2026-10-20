@@ -168,7 +168,8 @@ def parse_args(argv=None):
                              "0 draws the mode and stays out of the gradient.")
     parser.add_argument("--temp-max", type=float, default=0.9,
                         help="Highest temperature. The default range keeps most drawings near 0.5. "
-                             "The log-prob uses the value that drawing was sampled at.")
+                             "A root draws one value and forks keep it. "
+                             "The log-prob uses that value.")
     parser.add_argument("--sample-every", type=int, default=5,
                         help="Save a sheet of the training prompts every this many updates. "
                              "0 saves none. The fixed review sentence is still drawn at each checkpoint.")
@@ -435,10 +436,11 @@ def beam_stages(model, ref, scorer, optimizer, prompts, stoi, std, device, args,
 
     Every segment is conditioned on the full string. A play line forks by
     copying the pen state after a fixed number of steps and continuing that
-    same string. Dictionary lines are a few separate drawings. Novel lines
-    are many separate drawings; an exact read is the demonstration and the
-    search stops there. TrOCR scores finished lines only. The chunks of one
-    line share a single optimizer step.
+    same string. A root draws one temperature and each fork keeps it, so a
+    chunk advantage is not a hotter or colder draw. Dictionary lines are a
+    few separate drawings. Novel lines are many separate drawings; an exact
+    read is the demonstration and the search stops there. TrOCR scores
+    finished lines only. The chunks of one line share a single optimizer step.
     """
     from generate import sample_batch
 
@@ -475,7 +477,12 @@ def beam_stages(model, ref, scorer, optimizer, prompts, stoi, std, device, args,
     )
 
     def draw(count, parents, pen_states, max_steps):
-        temperatures = draw_temperatures(count, args.temp_min, args.temp_max)
+        if parents is None:
+            temperatures = draw_temperatures(count, args.temp_min, args.temp_max)
+        else:
+            # One temperature per root. A hotter sibling would score worse
+            # with TrOCR, and the chunk advantage would credit that gap.
+            temperatures = [float(parent["temperature"]) for parent in parents]
         print(f"    {text!r}  {count} draws", flush=True)
         sequences, new_states = sample_batch(
             model, [text] * count, stoi, device,

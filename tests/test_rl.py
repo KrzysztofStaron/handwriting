@@ -919,12 +919,24 @@ class BeamTests(unittest.TestCase):
         calls = []
         recorded = []
 
+        issued = []
+
+        def fake_temps(count, low, high):
+            batch = [0.2 + 0.3 * i for i in range(count)]
+            issued.append(list(batch))
+            return list(batch)
+
         def fake_sample(model, texts, stoi, device, temperature=1.0, states=None,
                         return_state=False, window_sharpen=2.0, max_steps=None, **kwargs):
             self.assertEqual(window_sharpen, 1.0)
             self.assertTrue(return_state)
             call = len(calls)
-            calls.append({"texts": list(texts), "states": states, "max_steps": max_steps})
+            calls.append({
+                "texts": list(texts),
+                "states": states,
+                "max_steps": max_steps,
+                "temperature": [float(value) for value in temperature],
+            })
             seqs = []
             saved = []
             for index in range(len(texts)):
@@ -968,8 +980,10 @@ class BeamTests(unittest.TestCase):
         scorer = Scorer()
         real_sample = generate.sample_batch
         real_step = train_rl.reinforce_step
+        real_temps = train_rl.draw_temperatures
         generate.sample_batch = fake_sample
         train_rl.reinforce_step = fake_reinforce
+        train_rl.draw_temperatures = fake_temps
         try:
             stages = list(train_rl.beam_stages(
                 None, None, scorer, None, ["john is a man"],
@@ -979,6 +993,7 @@ class BeamTests(unittest.TestCase):
         finally:
             generate.sample_batch = real_sample
             train_rl.reinforce_step = real_step
+            train_rl.draw_temperatures = real_temps
 
         line = "john is a man"
         self.assertEqual(scorer.refs, [[line] * 4])
@@ -1022,6 +1037,13 @@ class BeamTests(unittest.TestCase):
             self.assertEqual(item["history"][0][0], line)
             self.assertEqual(float(item["history"][0][1][0, 0]), parent)
             self.assertEqual(item["seq"].shape[0], 4)
+        # Roots draw a temperature. Both forks of a root keep it, including
+        # the log-prob the update reinforces.
+        self.assertEqual(issued, [[0.2, 0.5]])
+        self.assertEqual(calls[0]["temperature"], [0.2, 0.5])
+        self.assertEqual(calls[1]["temperature"], [0.2, 0.2, 0.5, 0.5])
+        self.assertEqual([item["temperature"] for item in roots], [0.2, 0.5])
+        self.assertEqual([item["temperature"] for item in leaves], [0.2, 0.2, 0.5, 0.5])
 
     def test_a_novel_exact_read_is_cloned_and_the_misses_are_left_out(self):
         import generate
