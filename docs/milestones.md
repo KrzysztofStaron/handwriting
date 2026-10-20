@@ -7,7 +7,7 @@ git switch --detach 7efa8d1   # the prefix beam with ESS resampling
 git switch master             # back to the current pipeline
 ```
 
-The trainer on `master` is `5cf0d6e`. Commits after that one do not change the update. How to launch it from `best-4` is `docs/from-best-4.md`. What that loop does is `docs/rl.md`. The series under `samples/rl-from-base` is written up in `docs/from-base-report.md`. Those three starts loaded `1d3be2c`, `8e524cc`, and `7efa8d1`.
+The trainer on `master` is `5cf0d6e`. Commits after that one do not change the update. How to launch it from `best-4` is `docs/from-best-4.md`. What that loop does is `docs/rl.md`. The series under `samples/rl-from-base` is written up in `docs/from-base-report.md`. Those three starts loaded `1d3be2c`, `8e524cc`, and `7efa8d1`. The earlier file `samples/rl/` and the failure reading of both are in `docs/pipeline-failures.md`.
 
 ## Trainer
 

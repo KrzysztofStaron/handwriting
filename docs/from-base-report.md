@@ -1,6 +1,6 @@
 # From-base run
 
-Snapshot of `samples/rl-from-base`, taken 2026-10-20 14:59. The trainer was still appending. The tables cover every update on disk at 14:55, through update 866 of the third start. By 14:59 the log had reached update 871, including a new review at update 868. Those extra updates sit in the same late-hour pattern and do not move the medians below.
+Snapshot of `samples/rl-from-base`, taken 2026-10-20 14:59. The earlier weight file, `samples/rl/`, and where both series stop learning, are in `docs/pipeline-failures.md`. The trainer was still appending. The tables cover every update on disk at 14:55, through update 866 of the third start. By 14:59 the log had reached update 871, including a new review at update 868. Those extra updates sit in the same late-hour pattern and do not move the medians below.
 
 The series is three starts of the recognizer loop, all saving to `samples/rl-from-base/rl-trocr.pth`, all anchored to `models/best-4.pth`. The command line of the process that was still running is:
 
