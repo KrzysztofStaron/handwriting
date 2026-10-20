@@ -243,7 +243,9 @@ def sample_batch(model, texts, stoi, device, temperature=1.0, max_steps=None,
     batch so the others can keep stepping, and its later points are discarded.
     `states` resumes each row from a pen state saved earlier; the returned
     points are only the new ones. With `return_state`, also return the pen
-    state at the step each row stopped.
+    state at the step each row stopped. That state includes `chars`, the
+    window's character index at each new pen step, or -1 once the window
+    has left the text.
     Returns a list of (T, 3) CPU tensors, one per text.
     """
     if not texts:
@@ -284,6 +286,7 @@ def sample_batch(model, texts, stoi, device, temperature=1.0, max_steps=None,
     budget = torch.tensor(budgets, dtype=torch.long)
     points = [[] for _ in range(count)]
     saved = [None] * count
+    char_rows = [[] for _ in range(count)] if return_state else None
     row_temp = torch.tensor(temperatures, dtype=torch.float32, device=device)
     last_hidden = None
     last_step = None
@@ -295,6 +298,8 @@ def sample_batch(model, texts, stoi, device, temperature=1.0, max_steps=None,
             if saved[i] is None and bool(mask[i]):
                 state = _row_state(pen_hidden, pen_step, i)
                 state["stopped"] = bool(stopped)
+                if char_rows is not None:
+                    state["chars"] = list(char_rows[i])
                 saved[i] = state
 
     with torch.no_grad():
@@ -329,6 +334,18 @@ def sample_batch(model, texts, stoi, device, temperature=1.0, max_steps=None,
             dy = my + sy * (corr * u1 + torch.sqrt((1.0 - corr * corr).clamp_min(1e-8)) * u2)
             pen_up = (torch.rand(count, device=device) < pen).float()
             step = torch.stack([dx, dy, pen_up], dim=-1)
+            window = None
+            if char_rows is not None:
+                # The character this pen step is writing. Once phi at the
+                # phantom position beats every real character, the window
+                # has left the text and the step belongs to no character.
+                phi_row = phi[:, 0]
+                on_text = phi_end[:, 0] <= phi_row.amax(dim=-1)
+                window = torch.where(
+                    on_text,
+                    phi_row.argmax(dim=-1),
+                    torch.full((count,), -1, dtype=torch.long, device=phi.device),
+                ).detach().cpu()
             moved = torch.cat([
                 step,
                 phi_end[:, 0].unsqueeze(1),
@@ -338,6 +355,11 @@ def sample_batch(model, texts, stoi, device, temperature=1.0, max_steps=None,
             for i in range(count):
                 if bool(take[i]):
                     points[i].append(moved[i, :3].clone())
+                    if window is not None:
+                        index = int(window[i])
+                        if index >= lengths[i]:
+                            index = -1
+                        char_rows[i].append(index)
             reached, done = stop_rows(
                 reached, take, moved[:, 2], moved[:, 3], moved[:, 4],
                 t, min_steps, tail_steps)

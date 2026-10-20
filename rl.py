@@ -27,6 +27,7 @@ import json
 import math
 import os
 import random
+import unicodedata
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
@@ -40,6 +41,11 @@ from vcer.reward import tighten_punctuation
 
 BASE_CKPT = "models/best-4.pth"
 CER_CAP = 2.0
+# A misread character lowers the advantage of the pen steps that wrote it.
+# 0.05 is about one character of CER on a short line, so the line advantage
+# still decides which drawing won. The blame fades across the neighbors.
+CHAR_PENALTY = 0.05
+CHAR_SPREAD = 2
 
 _QUOTES = str.maketrans({
     "\u201c": '"', "\u201d": '"', "\u2018": "'", "\u2019": "'",
@@ -138,6 +144,128 @@ def cer(reference, hypothesis):
     if not ref:
         return 0.0 if not hyp else 1.0
     return levenshtein(ref, hyp) / len(ref)
+
+
+def _normalize_indexed(text):
+    """Same string as normalize_text, plus the original index of each character."""
+    raw = "" if text is None else str(text).translate(_QUOTES)
+    start = 0
+    end = len(raw)
+    while start < end and raw[start].isspace():
+        start += 1
+    while end > start and raw[end - 1].isspace():
+        end -= 1
+    out = []
+    indexes = []
+    gap = False
+    for i in range(start, end):
+        ch = raw[i]
+        if ch.isspace():
+            gap = True
+            continue
+        if gap and out:
+            out.append(" ")
+            indexes.append(i - 1)
+        out.append(ch)
+        indexes.append(i)
+        gap = False
+    tight = []
+    tight_index = []
+    for ch, index in zip(out, indexes):
+        if (
+            tight
+            and tight[-1] == " "
+            and unicodedata.category(ch).startswith("P")
+        ):
+            tight[-1] = ch
+            tight_index[-1] = index
+        else:
+            tight.append(ch)
+            tight_index.append(index)
+    return "".join(tight), tight_index
+
+
+def edit_ops(ref, hyp):
+    """Unit-cost alignment. Each op is `(eq|sub|ins|del, ref_index)`.
+
+    `ref_index` is None for an insertion. A diagonal step wins a tie, then a
+    deletion, then an insertion. The distance is the number of ops that are
+    not `eq`, matching `levenshtein`.
+    """
+    ref = "" if ref is None else str(ref)
+    hyp = "" if hyp is None else str(hyp)
+    n, m = len(ref), len(hyp)
+    if n == 0 and m == 0:
+        return []
+    ceiling = n + m + 1
+    cost = [[ceiling] * (m + 1) for _ in range(n + 1)]
+    prev = [[None] * (m + 1) for _ in range(n + 1)]
+    cost[0][0] = 0
+    for i in range(n + 1):
+        for j in range(m + 1):
+            if i == 0 and j == 0:
+                continue
+            best = ceiling
+            choice = None
+            if i and j:
+                step = 0 if ref[i - 1] == hyp[j - 1] else 1
+                cand = cost[i - 1][j - 1] + step
+                if cand < best:
+                    best = cand
+                    kind = "eq" if step == 0 else "sub"
+                    choice = (i - 1, j - 1, kind)
+            if i:
+                cand = cost[i - 1][j] + 1
+                if cand < best:
+                    best = cand
+                    choice = (i - 1, j, "del")
+            if j:
+                cand = cost[i][j - 1] + 1
+                if cand < best:
+                    best = cand
+                    choice = (i, j - 1, "ins")
+            cost[i][j] = best
+            prev[i][j] = choice
+    ops = []
+    i, j = n, m
+    while i or j:
+        choice = prev[i][j]
+        if choice is None:
+            break
+        pi, pj, kind = choice
+        ops.append((kind, None if kind == "ins" else pi))
+        i, j = pi, pj
+    ops.reverse()
+    return ops
+
+
+def misread_weights(reference, hypothesis, radius=CHAR_SPREAD):
+    """Blame on each character of `reference`, in the order the policy saw it.
+
+    A substituted or deleted character scores 1. The score fades across
+    `radius` neighbors: a bad letter also moves the read of the letters
+    beside it. An insertion has no reference character. An exact read, after
+    the same normalization as CER, is all zeros.
+    """
+    text = "" if reference is None else str(reference)
+    weights = [0.0] * len(text)
+    normalized, indexes = _normalize_indexed(text)
+    if normalized != normalize_text(text):
+        raise RuntimeError("indexed normalization drifted from normalize_text")
+    if not normalized:
+        return weights
+    span = max(int(radius), 0)
+    for kind, ref_index in edit_ops(normalized, normalize_text(hypothesis)):
+        if kind not in ("sub", "del"):
+            continue
+        origin = indexes[ref_index]
+        for delta in range(-span, span + 1):
+            pos = origin + delta
+            if 0 <= pos < len(weights):
+                fade = 1.0 - abs(delta) / float(span + 1)
+                if fade > weights[pos]:
+                    weights[pos] = fade
+    return weights
 
 
 def string_reward(reference, hypothesis, alpha=0.8):
@@ -1112,6 +1240,71 @@ def token_advantages(node, credited, radius=ADV_RADIUS):
         own, int(node["seq"].shape[0]),
         parent=parent_adv, child=child_adv, radius=radius,
     )
+
+
+def misread_of(node):
+    """Misread weights for the ink in this node.
+
+    A finished line uses its own read. A fork averages the finished lines
+    under it, so a shared prefix is blamed only where those lines agree.
+    """
+    if not node.get("children"):
+        return node.get("misread")
+    total = None
+    count = 0
+    for leaf in _leaves_under(node):
+        weights = leaf.get("misread")
+        if not weights:
+            continue
+        if total is None:
+            total = [0.0] * len(weights)
+        for index, value in enumerate(weights):
+            total[index] += float(value)
+        count += 1
+    if not count:
+        return None
+    return [value / count for value in total]
+
+
+def apply_char_penalty(advantages, chars, weights, penalty):
+    """Subtract `penalty` times the window character's blame from each step.
+
+    A step whose window has left the text (index -1), or that has no blame,
+    keeps its advantage. `chars` has one index per advantage.
+    """
+    advantages = [float(value) for value in advantages]
+    indexes = [int(value) for value in chars]
+    if len(indexes) != len(advantages):
+        raise ValueError("one window character per pen step")
+    penalty = float(penalty)
+    if penalty == 0.0:
+        return advantages
+    limit = len(weights)
+    out = []
+    for value, index in zip(advantages, indexes):
+        if 0 <= index < limit:
+            value -= penalty * float(weights[index])
+        out.append(value)
+    return out
+
+
+def step_advantages(node, credited, penalty=CHAR_PENALTY):
+    """Per-step advantages, or None when every step still shares one number.
+
+    The chunk advantage stays. Pen steps whose window sits on a misread
+    character lose `penalty` times that character's weight.
+    """
+    length = int(node["seq"].shape[0])
+    branched = bool(node.get("parent") or node.get("children"))
+    if branched:
+        base = token_advantages(node, credited)
+    else:
+        base = [float(credited[id(node)])] * length
+    weights = misread_of(node) if penalty else None
+    chars = node.get("chars")
+    if not penalty or weights is None or chars is None:
+        return base if branched else None
+    return apply_char_penalty(base, chars, weights, penalty)
 
 
 def class_budget(source, n_words, beam, pinned=None, easy_leaves=0, novel_leaves=64):

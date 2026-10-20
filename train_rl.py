@@ -5,7 +5,9 @@ A play line is drawn from the full string, the same call the server makes.
 split is 4 roots, then 2, then 2, forking every few hundred pen steps.
 TrOCR scores only the finished lines. A chunk's advantage is how the mean
 score of the lines under it changed, spread over a few pen steps at the cut.
-Every chunk of the line is one optimizer step.
+Pen steps whose window sits on a character TrOCR misread also lose a small
+penalty, faded across the two neighboring characters. Every chunk of the
+line is one optimizer step.
 
 A dictionary line is a regression check: 4 to 8 separate drawings, on a
 small share of updates. A novel line is up to 64 separate drawings of the
@@ -51,9 +53,12 @@ from rl import (
     load_dictionary,
     consistency_sheet,
     advantages,
+    CHAR_PENALTY,
     chunk_advantages,
     class_budget,
     draw_temperatures,
+    misread_weights,
+    step_advantages,
     line_straightness,
     spacing_inconsistency,
     load_policy_and_ref,
@@ -67,7 +72,6 @@ from rl import (
     set_seed,
     short,
     strokes_to_images,
-    token_advantages,
     rollout_batch,
 )
 from rl_events import EVENTS_NAME, EventLog, pack_draws
@@ -146,6 +150,10 @@ def parse_args(argv=None):
                         help="Off by default, so word spacing does not change the reward. "
                              "A positive value subtracts at most this much when the gaps "
                              "between words are uneven. The measurement is still logged.")
+    parser.add_argument("--char-penalty", type=float, default=CHAR_PENALTY,
+                        help="Advantage lost by a pen step whose window is on a character "
+                             "TrOCR misread. The blame fades across the two neighboring "
+                             "characters. 0 turns it off. The line reward is unchanged.")
     parser.add_argument("--tau", type=float, default=0.1,
                         help="CER forgiven outright by --reward soft.")
     parser.add_argument("--reward-model", default="microsoft/trocr-large-handwritten")
@@ -509,6 +517,7 @@ def beam_stages(model, ref, scorer, optimizer, prompts, stoi, std, device, args,
                 "past": past,
                 "state": new_states[index],
                 "state_in": state_in,
+                "chars": new_states[index].get("chars"),
                 "temperature": temperatures[index],
                 "stopped": bool(new_states[index].get("stopped")),
             }
@@ -608,6 +617,10 @@ def beam_stages(model, ref, scorer, optimizer, prompts, stoi, std, device, args,
         }
     else:
         credited = chunk_advantages(leaves)
+    penalty = float(getattr(args, "char_penalty", CHAR_PENALTY))
+    if penalty:
+        for node, hyp in zip(leaves, hyps):
+            node["misread"] = misread_weights(node["text"], hyp)
 
     by_depth = {}
     for node in nodes:
@@ -637,8 +650,10 @@ def beam_stages(model, ref, scorer, optimizer, prompts, stoi, std, device, args,
             advantage = credited[id(node)]
             if method == "sft" and id(node) not in exact_ids:
                 item["skip"] = "rejected"
-            elif node.get("parent") or node.get("children"):
-                item["adv_steps"] = token_advantages(node, credited)
+            else:
+                adv_steps = step_advantages(node, credited, penalty)
+                if adv_steps is not None:
+                    item["adv_steps"] = adv_steps
             rollouts.append(item)
             advs.append(advantage)
         groups.append((group, rollouts, advs))
@@ -784,6 +799,8 @@ def main():
         raise SystemExit("--straightness must be >= 0")
     if args.spacing < 0:
         raise SystemExit("--spacing must be >= 0")
+    if args.char_penalty < 0:
+        raise SystemExit("--char-penalty must be >= 0")
     if args.k < 1 or args.batch < 1:
         raise SystemExit("--k and --batch must be >= 1")
     if args.beam < 1:
@@ -908,11 +925,12 @@ def main():
             share = "60% plain CER, 20% vCER  " if args.reward == "both" else "vCER  "
             print(f"{share}alpha {cfg['alpha']}  k {cfg['k']}  table {cfg['hash']}  "
                   f"confidence {args.confidence:g}  straightness {args.straightness:g}  "
-                  f"spacing {args.spacing:g}  "
+                  f"spacing {args.spacing:g}  char penalty {args.char_penalty:g}  "
                   f"prompts {args.prompts}", flush=True)
         else:
             print(f"reward {args.reward}  confidence {args.confidence:g}  "
                   f"straightness {args.straightness:g}  spacing {args.spacing:g}  "
+                  f"char penalty {args.char_penalty:g}  "
                   f"prompts {args.prompts}", flush=True)
         optimizer = torch.optim.Adam(model.parameters(), lr=args.lr)
         sidecar = load_sidecar(sidecar_for(ckpt, out_dir))
@@ -952,6 +970,7 @@ def main():
             "confidence_weight": args.confidence,
             "straightness": args.straightness,
             "spacing": args.spacing,
+            "char_penalty": args.char_penalty,
             "batch": args.batch,
             "k": args.k,
             "beam": args.beam,

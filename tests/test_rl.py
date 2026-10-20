@@ -53,6 +53,14 @@ from rl import (
     class_budget,
     segment_budgets,
     token_reinforce_loss,
+    edit_ops,
+    misread_weights,
+    misread_of,
+    step_advantages,
+    apply_char_penalty,
+    token_advantages,
+    normalize_text,
+    levenshtein,
 )
 
 
@@ -823,13 +831,17 @@ class BeamTests(unittest.TestCase):
         self.assertGreaterEqual(seqs[0].shape[0], 1)
         self.assertEqual(states[0]["x"].shape, (3,))
         self.assertIsInstance(states[0]["stopped"], bool)
-        more = sample_batch(
+        self.assertEqual(len(states[0]["chars"]), seqs[0].shape[0])
+        self.assertTrue(all(-1 <= int(index) < len("ab") for index in states[0]["chars"]))
+        more, more_states = sample_batch(
             model, ["abcd"], stoi, "cpu", temperature=1.0,
             max_steps=4, min_steps=2, tail_steps=1, steps_per_char=2,
-            window_sharpen=1.0, states=states,
+            window_sharpen=1.0, states=states, return_state=True,
         )
         self.assertGreaterEqual(more[0].shape[0], 1)
         self.assertEqual(more[0].shape[1], 3)
+        self.assertEqual(len(more_states[0]["chars"]), more[0].shape[0])
+        self.assertTrue(all(-1 <= int(index) < len("abcd") for index in more_states[0]["chars"]))
 
     def test_a_nine_word_line_forks_into_thirds(self):
         self.assertEqual(default_branches(9, 16), (4, 2, 2))
@@ -873,6 +885,76 @@ class BeamTests(unittest.TestCase):
         flat = [{"parent": None, "children": [], "reward": reward} for reward in (1.0, 3.0)]
         flat_adv = chunk_advantages(flat)
         self.assertEqual([flat_adv[id(item)] for item in flat], [-1.0, 1.0])
+
+    def test_misread_characters_take_a_penalty_on_their_pen_steps(self):
+        from rl import _normalize_indexed
+
+        samples = [
+            "abcd", "abXd", "abd", "", "hello:", "hello :", "a  b",
+            "hello :", "\u201chello\u201d", "  hi  ",
+        ]
+        for text in samples:
+            normalized, _indexes = _normalize_indexed(text)
+            self.assertEqual(normalized, normalize_text(text))
+        for ref, hyp in (("abcd", "abXd"), ("abcd", "abd"), ("abcd", ""), ("", "zz"), ("hello:", "hello :")):
+            ops = edit_ops(normalize_text(ref), normalize_text(hyp))
+            distance = sum(kind != "eq" for kind, _index in ops)
+            self.assertEqual(distance, levenshtein(normalize_text(ref), normalize_text(hyp)))
+        weights = misread_weights("abcd", "abXd")
+        self.assertEqual(weights[2], 1.0)
+        self.assertAlmostEqual(weights[1], 2.0 / 3.0)
+        self.assertAlmostEqual(weights[3], 2.0 / 3.0)
+        self.assertAlmostEqual(weights[0], 1.0 / 3.0)
+        self.assertEqual(misread_weights("abcd", "abXcd"), [0.0, 0.0, 0.0, 0.0])
+        self.assertEqual(misread_weights("abcd", "abcd"), [0.0, 0.0, 0.0, 0.0])
+        self.assertEqual(misread_weights("hello:", "hello :"), [0.0] * 6)
+        deleted = misread_weights("abcd", "abd")
+        self.assertEqual(deleted[2], 1.0)
+        steps = apply_char_penalty([0.2, 0.2, 0.2, 0.2], [0, 1, 2, -1], weights, 0.05)
+        self.assertAlmostEqual(steps[2], 0.15)
+        self.assertAlmostEqual(steps[0], 0.2 - 0.05 / 3.0)
+        self.assertEqual(steps[3], 0.2)
+        parent = {
+            "parent": None,
+            "children": [],
+            "chars": [0, 1],
+            "seq": torch.zeros(2, 3),
+        }
+        leaf_bad = {
+            "parent": parent,
+            "children": [],
+            "chars": [0],
+            "seq": torch.zeros(1, 3),
+            "misread": [1.0, 0.0],
+            "reward": 0.0,
+        }
+        leaf_ok = {
+            "parent": parent,
+            "children": [],
+            "chars": [1],
+            "seq": torch.zeros(1, 3),
+            "misread": [0.0, 0.0],
+            "reward": 1.0,
+        }
+        parent["children"] = [leaf_bad, leaf_ok]
+        self.assertEqual(misread_of(parent), [0.5, 0.0])
+        credited = {id(parent): 0.4, id(leaf_bad): -0.2, id(leaf_ok): 0.2}
+        base = token_advantages(parent, credited)
+        got = step_advantages(parent, credited, 0.05)
+        self.assertAlmostEqual(base[0] - got[0], 0.025)
+        self.assertAlmostEqual(base[1] - got[1], 0.0)
+        base_leaf = token_advantages(leaf_bad, credited)
+        blamed = step_advantages(leaf_bad, credited, 0.05)
+        self.assertAlmostEqual(base_leaf[0] - blamed[0], 0.05)
+        flat = {
+            "parent": None,
+            "children": [],
+            "chars": [0],
+            "seq": torch.zeros(1, 3),
+            "misread": [1.0, 0.0],
+        }
+        self.assertAlmostEqual(step_advantages(flat, {id(flat): -0.2}, 0.05)[0], -0.25)
+        self.assertIsNone(step_advantages(flat, {id(flat): -0.2}, 0.0))
 
     def test_a_boundary_fades_and_a_flat_advantage_does_not(self):
         self.assertEqual(blend_token_advantages(2.0, 4), [2.0, 2.0, 2.0, 2.0])
