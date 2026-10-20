@@ -675,7 +675,15 @@ function sessionLine(session) {
   if (session.reward) bits.push(session.reward);
   if (session.straightness) bits.push("straight " + session.straightness);
   if (session.spacing) bits.push("spacing " + session.spacing);
-  if (session.select_min != null && session.select_max != null && session.beam) {
+  if (session.tree && session.beam) {
+    const parts = ["play " + session.beam + " tree"];
+    if (session.words) {
+      parts.push(session.easy_leaves ? "words " + session.easy_leaves : "words 4–8");
+    }
+    if (session.novel_leaves) parts.push("novel " + session.novel_leaves);
+    bits.push(parts.join("  "));
+  }
+  else if (session.select_min != null && session.select_max != null && session.beam) {
     bits.push("beam " + session.beam + "  τ " + session.select_min + "–" + session.select_max);
   } else if (session.factors && session.beam) bits.push("beam " + session.beam);
   else if (session.beam) bits.push("beam " + session.beam + " × " + (session.keep || "?"));
@@ -947,8 +955,10 @@ function render() {
   const genPick = document.getElementById("gen-pick");
   genPick.innerHTML = samples.slice().reverse().map((row) => {
     const width = row.beam || session.beam;
-    let mode = "";
-    if (row.select_tau != null) {
+    let mode = row.method === "sft" ? "sft " : "";
+    if (row.tree) {
+      mode += `${String(row.tree).replace(/x/g, "×")} · `;
+    } else if (row.select_tau != null) {
       const tau = Number(row.select_tau);
       mode = `τ ${Number.isFinite(tau) ? tau.toFixed(2) : row.select_tau} · `;
     } else if (row.factor && width) {

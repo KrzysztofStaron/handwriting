@@ -1,17 +1,20 @@
 """Post-train the handwriting policy with a TrOCR-Large visual reward.
 
-Each update grows one line a word at a time. The first word is drawn `--beam`
-times from a blank page. Later words continue every drawing while the scores
-stay close. When a few pull ahead, the next word is redrawn with probability
-softmax(score / τ). TrOCR scores the ink of everything written so far against
-those words plus the word just added. The gradient is applied only to the new
-strokes.
+A play line is drawn from the full string, the same call the server makes.
+`--beam` finished lines (default 16) share a copied pen state: the usual
+split is 4 roots, then 2, then 2, forking every few hundred pen steps.
+TrOCR scores only the finished lines. A chunk's advantage is how the mean
+score of the lines under it changed, spread over a few pen steps at the cut.
+Every chunk of the line is one optimizer step.
+
+A dictionary line is a regression check: 4 to 8 separate drawings, on a
+small share of updates. A novel line is up to 64 separate drawings of the
+full string. An exact read is trained as a demonstration. The other novel
+draws keep the recognizer score, so a nearer miss ranks above a miss.
+
 The 10 samples at a checkpoint are only a review sheet of the full sentence.
-Some training lines are ten short random words from the model alphabet, and
-some are lowercase dictionary words no longer than a play line, so the policy
-also writes strings the play does not contain. One logged update is
-the whole line. Its reward, CER, KL, and length are the average of every
-drawing in that line.
+One logged update is the whole line. Its reward, CER, KL, and length are
+the average of every finished drawing in that line.
 
 About every 10 minutes the loop writes a checkpoint and draws one fixed short
 sentence 10 times, so the sheets are comparable. Re-running with no arguments
@@ -31,6 +34,7 @@ reads that file while training runs:
 
 import argparse
 import json
+import math
 import os
 import re
 import time
@@ -46,22 +50,24 @@ from rl import (
     choose_label,
     load_dictionary,
     consistency_sheet,
-    draw_select_temperature,
+    advantages,
+    chunk_advantages,
+    class_budget,
     draw_temperatures,
     line_straightness,
     spacing_inconsistency,
     load_policy_and_ref,
-    parent_advantages,
+    parse_tree,
     refuse_overwrite_base,
     reinforce_step,
     resolve_prompts,
     reveal,
     save_policy,
-    select_parents,
+    segment_budgets,
     set_seed,
     short,
     strokes_to_images,
-    word_prefixes,
+    token_advantages,
     rollout_batch,
 )
 from rl_events import EVENTS_NAME, EventLog, pack_draws
@@ -86,28 +92,32 @@ def parse_args(argv=None):
     parser.add_argument("-k", type=int, default=8,
                         help="Unused by the word beam. The width is --beam.")
     parser.add_argument("--beam", type=int, default=16,
-                        help="Drawings of each prefix. Every drawing continues while the "
-                             "scores stay close. When a few pull ahead, the next word is "
-                             "redrawn with probability softmax(score / τ).")
+                        help="Finished lines of a play prompt. They share a copied pen "
+                             "state, and a chunk is credited by the lines that continue it.")
     parser.add_argument("--keep", type=int, default=4,
-                        help="Unused. Who continues is chosen from the scores.")
+                        help="Unused. The tree is --tree.")
     parser.add_argument("--factor", type=int, default=None,
-                        help="Unused. Who continues is chosen from the scores.")
-    parser.add_argument("--select-min", type=float, default=0.05,
-                        help="Lowest selection temperature. τ is drawn once per line, "
-                             "log-uniform up to --select-max. A small τ concentrates "
-                             "sooner. This is not --tau.")
-    parser.add_argument("--select-max", type=float, default=0.40,
-                        help="Highest selection temperature. A large τ keeps the weights "
-                             "flat, so similar scores continue everyone.")
-    parser.add_argument("--novel", type=float, default=0.25,
+                        help="Unused. The tree is --tree.")
+    parser.add_argument("--tree", default=None,
+                        help="Play-line split, such as 4x2x2. The default uses 4x2x2 "
+                             "on half of play lines and 4x4, 2x8, or 16 separate lines "
+                             "on the rest. Dictionary and novel lines ignore this.")
+    parser.add_argument("--easy-leaves", type=int, default=0,
+                        help="Separate drawings of a dictionary line. 0 draws 4 to 8. "
+                             "These lines do not share a pen state.")
+    parser.add_argument("--novel-leaves", type=int, default=64,
+                        help="Separate drawings of a novel line, stopped early when one "
+                             "read is exact. An exact read is the demonstration. The "
+                             "rest keep the recognizer score.")
+    parser.add_argument("--novel", type=float, default=0.05,
                         help="Chance a training line is ten random words of at most 4 "
-                             "letters or digits from the model alphabet, instead of a "
-                             "line from --prompts. 0 keeps the file.")
-    parser.add_argument("--words", type=float, default=0.25,
+                             "letters or digits from the model alphabet. Each one draws "
+                             "--novel-leaves copies, so this stays a small share. "
+                             "0 keeps the file.")
+    parser.add_argument("--words", type=float, default=0.10,
                         help="Chance a training line is random lowercase dictionary "
-                             "words, with no punctuation, cut so it is no longer than "
-                             "--max-chars. 0 leaves that chance to the play and --novel.")
+                             "words, kept as a regression check. 0 leaves that chance "
+                             "to the play and --novel.")
     parser.add_argument("--dict", default="/usr/share/dict/words",
                         help="Word list for --words. One word per line. "
                              "Capitals, digits, and punctuation are dropped.")
@@ -381,44 +391,79 @@ def summarize_line(word_stats):
     }
 
 
+def _pinned_branches(tree):
+    if tree is None:
+        return None
+    if isinstance(tree, str):
+        return parse_tree(tree)
+    return tuple(int(branch) for branch in tree)
+
+
+def commit_grads(model, optimizer, clip, used):
+    """Clip the accumulated gradient and take one step."""
+    if optimizer is None or not used or model is None:
+        return float("nan"), False
+    trainable = [p for p in model.parameters() if p.requires_grad and p.grad is not None]
+    if not trainable:
+        optimizer.zero_grad(set_to_none=True)
+        return float("nan"), False
+    grad_norm = float(torch.nn.utils.clip_grad_norm_(trainable, clip))
+    if math.isfinite(grad_norm):
+        optimizer.step()
+        return grad_norm, True
+    print("  non-finite gradient, skipping the update", flush=True)
+    optimizer.zero_grad(set_to_none=True)
+    return grad_norm, False
+
+
+def _penalize(rewards, bends, spaces, straightness, spacing):
+    if straightness > 0 or spacing > 0:
+        return [
+            float(reward) - straightness * bend - spacing * space
+            for reward, bend, space in zip(rewards, bends, spaces)
+        ]
+    return [float(reward) for reward in rewards]
+
+
+# Score a novel line in batches of this many, and stop when one read is exact.
+NOVEL_WAVE = 16
+
+
 def beam_stages(model, ref, scorer, optimizer, prompts, stoi, std, device, args, ema,
                 log=None, block=None, out_dir=None, counter=None):
-    """Grow one prompt word by word. Yield one update for the whole line.
+    """Draw one prompt and yield one update.
 
-    The first stage draws `--beam` copies of the first word. After each word,
-    weights are softmax(score / τ). τ is drawn once for the line. While the
-    effective sample size stays at least half the beam, every drawing continues
-    once. Below that, systematic resampling draws the next word in proportion
-    to the weights. The picture is every stroke so far, and the target is
-    every word so far, including the word just added. The gradient covers only
-    the new strokes. The logged update averages every drawing in the line.
+    Every segment is conditioned on the full string. A play line forks by
+    copying the pen state after a fixed number of steps and continuing that
+    same string. Dictionary lines are a few separate drawings. Novel lines
+    are many separate drawings; an exact read is the demonstration and the
+    search stops there. TrOCR scores finished lines only. The chunks of one
+    line share a single optimizer step.
     """
     from generate import sample_batch
 
     # A pinned --text stays as given. Otherwise some lines are ten short
     # random words, and some are dictionary words, so the policy also
     # practices strings the play never contains.
-    pinned = getattr(args, "text", None)
-    novel = 0.0 if pinned else getattr(args, "novel", 0.0)
-    words = 0.0 if pinned else getattr(args, "words", 0.0)
+    pinned_text = getattr(args, "text", None)
+    novel_rate = 0.0 if pinned_text else getattr(args, "novel", 0.0)
+    words_rate = 0.0 if pinned_text else getattr(args, "words", 0.0)
     text, source = choose_label(
-        prompts, stoi, novel, getattr(args, "max_chars", 48),
-        words=words, lexicon=getattr(args, "lexicon", None),
+        prompts, stoi, novel_rate, getattr(args, "max_chars", 48),
+        words=words_rate, lexicon=getattr(args, "lexicon", None),
     )
-    prefixes = word_prefixes(text)
-    width = args.beam
-    if width < 1:
-        raise ValueError("beam width must be at least 1")
-    tau = getattr(args, "select_temp", None)
-    if tau is None:
-        tau = draw_select_temperature(
-            getattr(args, "select_min", 0.05),
-            getattr(args, "select_max", 0.40),
-        )
-    tau = float(tau)
-    if tau <= 0.0:
-        raise ValueError("select temperature must be > 0")
-    print(f"    {text!r}  {len(prefixes)} words  beam {width}  τ {tau:.3f}",
+    n_words = len(text.split())
+    pinned = _pinned_branches(getattr(args, "tree", None))
+    if source != "play":
+        pinned = None
+    width, branches = class_budget(
+        source, n_words, args.beam, pinned,
+        easy_leaves=getattr(args, "easy_leaves", 0),
+        novel_leaves=getattr(args, "novel_leaves", 64),
+    )
+    budgets = segment_budgets(text, len(branches))
+    label = "x".join(str(branch) for branch in branches)
+    print(f"    {text!r}  {n_words} words  {source}  {label}  steps {budgets}",
           flush=True)
     update_no = None
     if counter is not None:
@@ -428,122 +473,225 @@ def beam_stages(model, ref, scorer, optimizer, prompts, stoi, std, device, args,
         out_dir is not None and args.sample_every > 0 and update_no is not None
         and update_no % args.sample_every == 0
     )
-    word_stats = []
-    all_rewards, all_cers, all_hyps, all_refs = [], [], [], []
-    all_draws, all_wcors = [], []
-    ess_values = []
-    resampled_flags = []
-    sheet_name = None
-    survivors = None
-    for stage, prefix in enumerate(prefixes):
-        if stage == 0:
-            states = None
-            carried = [None] * width
-            histories = [[] for _ in range(width)]
-            lineage = [None] * width
-        else:
-            states = [item["state"] for item in survivors]
-            carried = [item["seq"] for item in survivors]
-            histories = [list(item["history"]) for item in survivors]
-            lineage = [item["parent"] for item in survivors]
-        temperatures = draw_temperatures(width, args.temp_min, args.temp_max)
-        print(f"    {prefix!r}  {width} draws", flush=True)
+
+    def draw(count, parents, pen_states, max_steps):
+        temperatures = draw_temperatures(count, args.temp_min, args.temp_max)
+        print(f"    {text!r}  {count} draws", flush=True)
         sequences, new_states = sample_batch(
-            model, [prefix] * width, stoi, device,
+            model, [text] * count, stoi, device,
             temperature=temperatures, window_sharpen=args.sharpen,
-            states=states, return_state=True,
+            states=pen_states, return_state=True, max_steps=max_steps,
         )
-        full = []
+        grown = []
         for index, seq in enumerate(sequences):
-            if carried[index] is None:
-                full.append(seq)
+            parent = None if parents is None else parents[index]
+            if parent is None:
+                full = seq
+                past = []
+                state_in = None
             else:
-                full.append(torch.cat([carried[index], seq], dim=0))
-            print(f"      draw {index + 1}/{width}  temp {temperatures[index]:.2f}"
-                  f"  +{seq.shape[0]}  ({full[-1].shape[0]} steps)", flush=True)
+                full = torch.cat([parent["full"], seq], dim=0)
+                past = list(parent["past"]) + [(parent["text"], parent["seq"])]
+                state_in = pen_states[index]
+            node = {
+                "parent": parent,
+                "children": [],
+                "text": text,
+                "seq": seq,
+                "full": full,
+                "past": past,
+                "state": new_states[index],
+                "state_in": state_in,
+                "temperature": temperatures[index],
+                "stopped": bool(new_states[index].get("stopped")),
+            }
+            if parent is not None:
+                parent["children"].append(node)
+            grown.append(node)
+            print(f"      draw {index + 1}/{count}  temp {temperatures[index]:.2f}"
+                  f"  +{seq.shape[0]}  ({full.shape[0]} steps)", flush=True)
         if log is not None:
-            for index, seq in enumerate(full):
+            for index, node in enumerate(grown):
                 log.write({
                     "type": "draw",
                     "update": update_no,
                     "block": block,
-                    "text": prefix,
+                    "text": text,
                     "draw": index + 1,
-                    "k": width,
-                    "temperature": temperatures[index],
-                    "steps": int(seq.shape[0]),
+                    "k": count,
+                    "temperature": node["temperature"],
+                    "steps": int(node["full"].shape[0]),
                 })
-        images = strokes_to_images(full, std)
-        refs = [prefix] * width
-        rewards, cers, hyps = scorer.score(images, refs)
+        return grown
+
+    nodes = []
+    scored = None
+    if source == "novel":
+        leaves = []
+        images = []
+        rewards = []
+        cers = []
+        hyps = []
+        wcors = []
+        confs = []
+        while len(leaves) < width:
+            count = min(NOVEL_WAVE, width - len(leaves))
+            grown = draw(count, None, None, None)
+            batch_images = strokes_to_images([node["full"] for node in grown], std)
+            batch_rewards, batch_cers, batch_hyps = scorer.score(
+                batch_images, [text] * count)
+            batch_wcors = _wcer_list(scorer, count)
+            batch_confs = list(getattr(scorer, "last_confidence", None) or [])
+            if len(batch_confs) != count:
+                batch_confs = [None] * count
+            leaves.extend(grown)
+            images.extend(batch_images)
+            rewards.extend(batch_rewards)
+            cers.extend(batch_cers)
+            hyps.extend(batch_hyps)
+            wcors.extend(batch_wcors)
+            confs.extend(batch_confs)
+            if any(float(cer) == 0.0 for cer in batch_cers):
+                break
+        nodes = leaves
+        scored = (images, rewards, cers, hyps, wcors, confs)
+    else:
+        frontier = []
+        for depth, copies in enumerate(branches):
+            if depth == 0:
+                parents = None
+                pen_states = None
+                count = copies
+            else:
+                alive = [node for node in frontier if not node.get("stopped")]
+                if not alive:
+                    break
+                parents = [node for node in alive for _ in range(copies)]
+                pen_states = [node["state"] for node in parents]
+                count = len(parents)
+            frontier = draw(count, parents, pen_states, budgets[depth])
+            nodes.extend(frontier)
+        leaves = [node for node in nodes if not node.get("children")]
+    if not leaves:
+        raise RuntimeError("the line produced no finished drawings")
+    if scored is None:
+        images = strokes_to_images([node["full"] for node in leaves], std)
+        rewards, cers, hyps = scorer.score(images, [text] * len(leaves))
         wcors = _wcer_list(scorer, len(hyps))
-        bends = [line_straightness(seq, std) for seq in full]
-        spaces = [spacing_inconsistency(seq, std, prefix) for seq in full]
-        if args.straightness > 0 or args.spacing > 0:
-            rewards = [
-                float(reward) - args.straightness * bend - args.spacing * space
-                for reward, bend, space in zip(rewards, bends, spaces)
-            ]
-        advs, ema = parent_advantages(rewards, lineage, ema)
+        confs = list(getattr(scorer, "last_confidence", None) or [])
+        if len(confs) != len(leaves):
+            confs = [None] * len(leaves)
+    else:
+        images, rewards, cers, hyps, wcors, confs = scored
+    bends = [line_straightness(node["full"], std) for node in leaves]
+    spaces = [spacing_inconsistency(node["full"], std, text) for node in leaves]
+    rewards = _penalize(rewards, bends, spaces, args.straightness, args.spacing)
+    for node, reward in zip(leaves, rewards):
+        node["reward"] = float(reward)
+    exact = [float(cer) == 0.0 for cer in cers]
+    method = "tree" if len(branches) > 1 else "flat"
+    if source == "novel" and any(exact):
+        method = "sft"
+    if len(leaves) == 1 and method != "sft":
+        lone, ema = advantages([float(rewards[0])], 1, ema)
+        credited = {id(leaves[0]): lone[0]}
+    elif method == "sft":
+        credited = {
+            id(node): (1.0 if hit else 0.0) for node, hit in zip(leaves, exact)
+        }
+    else:
+        credited = chunk_advantages(leaves)
+
+    by_depth = {}
+    for node in nodes:
+        depth = 0
+        cursor = node.get("parent")
+        while cursor is not None:
+            depth += 1
+            cursor = cursor.get("parent")
+        by_depth.setdefault(depth, []).append(node)
+    exact_ids = {id(node) for node, hit in zip(leaves, exact) if hit}
+    groups = []
+    for depth in sorted(by_depth):
+        group = by_depth[depth]
         rollouts = []
-        for index, seq in enumerate(sequences):
-            item = {"text": prefix, "seq": seq, "temperature": temperatures[index]}
-            if states is not None:
-                # Pen state from sampling, and earlier words under the texts
-                # they were actually written with. The new strokes stay out of
-                # history so the anchor can replay up to this word.
-                item["state"] = states[index]
-                item["history"] = histories[index]
+        advs = []
+        for node in group:
+            item = {
+                "text": node["text"],
+                "seq": node["seq"],
+                "temperature": node["temperature"],
+            }
+            if node["state_in"] is not None:
+                # The fork copies the pen state. The text stays the full line,
+                # which is the string this segment was sampled under.
+                item["state"] = node["state_in"]
+                item["history"] = node["past"]
+            advantage = credited[id(node)]
+            if method == "sft" and id(node) not in exact_ids:
+                item["skip"] = "rejected"
+            elif node.get("parent") or node.get("children"):
+                item["adv_steps"] = token_advantages(node, credited)
             rollouts.append(item)
+            advs.append(advantage)
+        groups.append((group, rollouts, advs))
+
+    if optimizer is not None:
+        optimizer.zero_grad(set_to_none=True)
+    n_groups = max(len(groups), 1)
+    word_stats = []
+    trace_by_id = {}
+    for group, rollouts, advs in groups:
+        divisor = len(rollouts) * n_groups
+        if method == "sft":
+            divisor = sum(1 for item in rollouts if not item.get("skip")) or 1
         stats = reinforce_step(
             model, ref, rollouts, advs, stoi, device,
             args.temperature, args.sharpen, args.kl, optimizer, args.clip,
+            apply=False, normalizer=divisor,
         )
-        image_names = []
-        if save_pictures:
-            image_names = save_sample_images(
-                images, out_dir, update_no, stage=stage)
-            if sheet_name is None and image_names:
-                sheet_name = image_names[0]
-        draws = pack_draws(
-            refs,
-            [int(seq.shape[0]) for seq in full],
-            rewards, cers, hyps, advs, stats.get("traces"),
-            wcors,
-            getattr(scorer, "last_confidence", None),
-            temperatures,
-            image_names,
-            bends,
-            spaces,
-        )
-        parents, ess, resampled = select_parents(rewards, tau)
-        ess_values.append(ess)
-        resampled_flags.append(bool(resampled))
-        if resampled:
-            print(f"    resample ess {ess:.1f}/{width} tau {tau:.2f} "
-                  f"parents {len(set(parents))}", flush=True)
-        else:
-            print(f"    keep all ess {ess:.1f}/{width} tau {tau:.2f}", flush=True)
-        survivors = [
-            {
-                "seq": full[parent],
-                "state": new_states[parent],
-                "history": list(histories[parent]) + [(prefix, sequences[parent])],
-                "parent": parent,
-            }
-            for parent in parents
-        ]
         word_stats.append(stats)
-        all_rewards.extend(rewards)
-        all_cers.extend(cers)
-        all_hyps.extend(hyps)
-        all_refs.extend(refs)
-        all_draws.extend(draws)
-        all_wcors.extend(wcors)
+        for node, trace in zip(group, stats.get("traces") or []):
+            trace_by_id[id(node)] = trace
+    used = sum(int(item["used"]) for item in word_stats)
+    grad, stepped = commit_grads(model, optimizer, args.clip, used)
+    for item in word_stats:
+        item["grad"] = grad
+        item["stepped"] = stepped
+    leaf_traces = [trace_by_id.get(id(node), {}) for node in leaves]
+    if not any(node.get("children") for node in nodes):
+        if method != "sft":
+            method = "flat"
+        label = str(len(leaves))
+        branches = (len(leaves),)
+    sheet_name = None
+    image_names = []
+    if save_pictures:
+        image_names = save_sample_images(images, out_dir, update_no)
+        if image_names:
+            sheet_name = image_names[0]
+    draws = pack_draws(
+        [text] * len(leaves),
+        [int(node["full"].shape[0]) for node in leaves],
+        rewards, cers, hyps,
+        [credited[id(node)] for node in leaves],
+        leaf_traces,
+        wcors,
+        confs,
+        [node["temperature"] for node in leaves],
+        image_names,
+        bends,
+        spaces,
+    )
     yield (
-        summarize_line(word_stats), all_rewards, all_cers, all_hyps, all_refs,
-        ema, all_draws, all_wcors, sheet_name, source,
-        {"tau": tau, "ess": ess_values, "resampled": resampled_flags},
+        summarize_line(word_stats), list(rewards), list(cers), list(hyps),
+        [text] * len(leaves), ema, draws, list(wcors), sheet_name, source,
+        {
+            "tree": label,
+            "cuts": budgets,
+            "branches": [int(branch) for branch in branches],
+            "method": method,
+        },
     )
 
 
@@ -633,8 +781,23 @@ def main():
         raise SystemExit("--k and --batch must be >= 1")
     if args.beam < 1:
         raise SystemExit("--beam must be at least 1")
-    if args.select_min <= 0 or args.select_max < args.select_min:
-        raise SystemExit("--select-min must be > 0 and --select-max must be >= --select-min")
+    if args.easy_leaves < 0:
+        raise SystemExit("--easy-leaves must be >= 0")
+    if args.novel_leaves < 1:
+        raise SystemExit("--novel-leaves must be at least 1")
+    if args.tree:
+        try:
+            pinned_tree = parse_tree(args.tree)
+        except ValueError as exc:
+            raise SystemExit(str(exc)) from exc
+        if pinned_tree is not None:
+            product = 1
+            for branch in pinned_tree:
+                product *= branch
+            if product != args.beam:
+                raise SystemExit(
+                    f"--tree {args.tree} multiplies to {product}, not --beam {args.beam}")
+        args.tree = pinned_tree
     if not 0.0 <= args.novel <= 1.0:
         raise SystemExit("--novel must be between 0 and 1")
     if not 0.0 <= args.words <= 1.0:
@@ -689,7 +852,10 @@ def main():
         print("sampler on cpu (one pen step at a time is faster there); TrOCR on mps",
               flush=True)
     print(f"KL anchor: {args.ref}", flush=True)
-    print(f"word beam {args.beam}, select τ {args.select_min:g}–{args.select_max:g}   "
+    tree_bit = "auto" if not args.tree else "x".join(str(branch) for branch in args.tree)
+    easy_bit = "4-8" if args.easy_leaves == 0 else str(args.easy_leaves)
+    print(f"play beam {args.beam}, tree {tree_bit}   "
+          f"dictionary {easy_bit}   novel {args.novel_leaves}   "
           f"checkpoint about every {args.block_minutes:g} min", flush=True)
     print(f"temperature: normal around {(args.temp_min + args.temp_max) / 2:g}, "
           f"kept inside {args.temp_min:g} to {args.temp_max:g}",
@@ -782,8 +948,9 @@ def main():
             "batch": args.batch,
             "k": args.k,
             "beam": args.beam,
-            "select_min": args.select_min,
-            "select_max": args.select_max,
+            "tree": "auto" if not args.tree else "x".join(str(branch) for branch in args.tree),
+            "easy_leaves": args.easy_leaves,
+            "novel_leaves": args.novel_leaves,
             "novel": 0.0 if args.text else args.novel,
             "words": 0.0 if args.text else args.words,
             "temperature_min": args.temp_min,
@@ -812,7 +979,7 @@ def main():
                 while True:
                     counter = [updates]
                     stop_block = False
-                    for stats, rewards, cers, hyps, refs, ema, draws, wcors, sheet_name, source, select in beam_stages(
+                    for stats, rewards, cers, hyps, refs, ema, draws, wcors, sheet_name, source, tree in beam_stages(
                         model, ref, scorer, optimizer, prompts, stoi, std, device, args, ema,
                         log=log, block=index, out_dir=out_dir, counter=counter,
                     ):
@@ -834,11 +1001,8 @@ def main():
                         full_text = refs[-1]
                         finished = [i for i, ref in enumerate(refs) if ref == full_text]
                         best_i = max(finished, key=lambda i: rewards[i])
-                        ess_mean = sum(select["ess"]) / len(select["ess"])
-                        resampled = sum(1 for flag in select["resampled"] if flag)
                         print(f"  update {updates}  {elapsed:.1f} min  "
-                              f"beam {args.beam}  τ {select['tau']:.3f}  "
-                              f"ess {ess_mean:.1f}  resampled {resampled}/{len(select['ess'])}  "
+                              f"{tree['method']} {tree['tree']}  "
                               f"reward {reward_mean:.3f}  "
                               f"cer {cer_mean:.3f}  "
                               f"{wcer_bit}"
@@ -873,10 +1037,10 @@ def main():
                                 sum(item["steps"] for item in draws) / len(draws) if draws else None
                             ),
                             "source": source,
-                            "beam": args.beam,
-                            "select_tau": select["tau"],
-                            "ess_mean": ess_mean,
-                            "resampled": resampled,
+                            "beam": len(rewards),
+                            "tree": tree["tree"],
+                            "method": tree["method"],
+                            "cuts": tree["cuts"],
                             "example": {"text": full_text, "hyp": hyps[best_i]},
                             "sheet": sheet_name,
                             "draws": draws,

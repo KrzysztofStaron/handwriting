@@ -422,7 +422,7 @@ def _replay_batch(seqs, texts, stoi):
 
 
 def trajectory_logprobs(model, seqs, texts, stoi, device, temperature, sharpen,
-                        temperatures=None):
+                        temperatures=None, return_steps=False):
     """Teacher-forced sum of log pi for a batch. Returns (logp (B,), length (B,)).
 
     Sampling feeds each point back as the next input. Replaying those points
@@ -445,6 +445,8 @@ def trajectory_logprobs(model, seqs, texts, stoi, device, temperature, sharpen,
     out, _, _, _ = model(x, c, c_mask)
     temp = torch.tensor([float(value) for value in temperatures], dtype=out.dtype, device=device)
     per = step_logprob(out, y, temperature=temp) * mask
+    if return_steps:
+        return per, mask
     return per.sum(dim=1), mask.sum(dim=1)
 
 
@@ -514,7 +516,7 @@ def _segment_rows(last_points, news, texts, stoi):
 
 
 def logprobs_from_states(model, states, news, texts, stoi, device, temperature, sharpen,
-                         temperatures=None):
+                         temperatures=None, return_steps=False):
     """Log-density of new points given the pen states they were sampled from.
 
     The state is a constant, so the gradient stays on the word just added.
@@ -535,6 +537,8 @@ def logprobs_from_states(model, states, news, texts, stoi, device, temperature, 
     out, _, _, _ = model(x, c, c_mask, hidden)
     temp = torch.tensor([float(value) for value in temperatures], dtype=out.dtype, device=device)
     per = step_logprob(out, y, temperature=temp) * mask
+    if return_steps:
+        return per, mask
     return per.sum(dim=1), mask.sum(dim=1)
 
 
@@ -562,6 +566,33 @@ def reinforce_loss(logp_sum, logp_ref_sum, length, advantage, kl_coef):
     if torch.is_tensor(shaped):
         shaped = shaped.detach()
     return -(shaped * mean_logp)
+
+
+def token_reinforce_loss(per, per_ref, advantages, kl_coef):
+    """Mean over pen steps of -(A_t - kl * mean_kl) * log π_t.
+
+    `per` and `per_ref` are the step log-densities of one segment, with no
+    padding. `advantages` is a scalar or one value per step. A constant
+    advantage matches `reinforce_loss` on the sums. The KL term is the mean
+    over the segment and is stopped, same as the scalar loss.
+    """
+    per = per.reshape(-1)
+    per_ref = per_ref.reshape(-1)
+    if per.shape[0] != per_ref.shape[0] or per.shape[0] < 1:
+        raise ValueError("one reference log-density per pen step")
+    if isinstance(advantages, (list, tuple)):
+        adv = torch.tensor(list(advantages), dtype=per.dtype, device=per.device)
+    elif torch.is_tensor(advantages) and advantages.ndim > 0:
+        adv = advantages.reshape(-1).to(dtype=per.dtype, device=per.device)
+    else:
+        adv = per.new_full(per.shape, float(advantages))
+    if adv.shape[0] != per.shape[0]:
+        raise ValueError("one advantage per pen step")
+    adv = adv.detach()
+    length = per.new_tensor(float(per.shape[0]))
+    step_kl = (per.detach().sum() - per_ref.detach().sum()) / length
+    shaped = adv - kl_coef * step_kl.detach()
+    return -((shaped * per).sum() / length)
 
 
 def group_advantages(rewards, k):
@@ -593,42 +624,6 @@ def advantages(rewards, k, ema):
     return [r - baseline for r in rewards], new_ema
 
 
-def parent_advantages(rewards, parents, ema):
-    """Baseline for one word of the beam. Returns (advantages, new_ema).
-
-    The first word has no parent. Those drawings are one group, so a hard
-    word is not punished for being hard. A later word centers the children of
-    one drawing on that drawing's mean when it has two or more children. A
-    drawing that continues only once uses the EMA, and the EMA moves by the
-    mean of those single children.
-    """
-    if len(rewards) != len(parents):
-        raise ValueError("one parent mark per reward")
-    if not rewards:
-        raise ValueError("no rewards")
-    if all(parent is None for parent in parents):
-        return advantages(rewards, len(rewards), ema)
-    groups = {}
-    for index, parent in enumerate(parents):
-        groups.setdefault(parent, []).append(index)
-    out = [0.0] * len(rewards)
-    lone = []
-    for indexes in groups.values():
-        if len(indexes) == 1:
-            lone.append(indexes[0])
-            continue
-        group = [float(rewards[i]) for i in indexes]
-        base = sum(group) / len(group)
-        for i in indexes:
-            out[i] = float(rewards[i]) - base
-    if lone:
-        lone_rewards = [float(rewards[i]) for i in lone]
-        lone_advs, ema = advantages(lone_rewards, 1, ema)
-        for i, adv in zip(lone, lone_advs):
-            out[i] = adv
-    return out, ema
-
-
 # Eight lines at a time keeps the backward graph on a laptop while the
 # sampler still draws the whole update in one loop.
 _GRAD_CHUNK = 8
@@ -639,15 +634,22 @@ _TEMP_REFERENCE = 0.5
 
 
 def reinforce_step(model, ref, rollouts, advs, stoi, device, temperature,
-                   sharpen, kl_coef, optimizer, clip):
+                   sharpen, kl_coef, optimizer, clip, apply=True, normalizer=None):
     """On-policy update over a list of {text, seq} rollouts.
 
     The score-function backward runs in chunks of variable-length lines. Each
-    chunk is one padded forward. Gradients are averaged over the whole update,
-    including rows that were skipped.
+    chunk is one padded forward. Gradients are averaged over `normalizer`
+    rows, or over this call when that is omitted, including rows that were
+    skipped. `apply` False leaves the gradients in place so a caller can
+    backward every chunk of one line and then take a single step.
+    A rollout may carry `adv_steps`, one advantage per new pen step. Without
+    it the scalar advantage is used on every step.
     """
-    optimizer.zero_grad(set_to_none=True)
-    n = len(rollouts)
+    if apply:
+        optimizer.zero_grad(set_to_none=True)
+    n = len(rollouts) if normalizer is None else int(normalizer)
+    if n < 1:
+        n = 1
     used = 0
     loss_acc = 0.0
     kl_acc = 0.0
@@ -666,6 +668,10 @@ def reinforce_step(model, ref, rollouts, advs, stoi, device, temperature,
             "skipped": None,
         }
         traces.append(trace)
+        if item.get("skip"):
+            reason = item.get("skip")
+            trace["skipped"] = reason if isinstance(reason, str) else "rejected"
+            continue
         if not math.isfinite(adv_f):
             trace["skipped"] = "nonfinite_advantage"
             continue
@@ -684,12 +690,13 @@ def reinforce_step(model, ref, rollouts, advs, stoi, device, temperature,
             raise RuntimeError("a gradient chunk mixed a fresh line with a continued word")
         if continued:
             pen_states = [rollouts[index]["state"] for index in chosen]
-            logp, length = logprobs_from_states(
+            per, mask = logprobs_from_states(
                 model, pen_states, seqs, texts, stoi, device,
-                temperature, sharpen, temperatures=temps)
+                temperature, sharpen, temperatures=temps, return_steps=True)
         else:
-            logp, length = trajectory_logprobs(
-                model, seqs, texts, stoi, device, temperature, sharpen, temperatures=temps)
+            per, mask = trajectory_logprobs(
+                model, seqs, texts, stoi, device, temperature, sharpen,
+                temperatures=temps, return_steps=True)
         if kl_coef:
             with torch.no_grad():
                 if continued:
@@ -697,40 +704,58 @@ def reinforce_step(model, ref, rollouts, advs, stoi, device, temperature,
                         history_state(ref, rollouts[index]["history"], stoi, device, sharpen)
                         for index in chosen
                     ]
-                    logp_ref, _ = logprobs_from_states(
+                    per_ref, _ = logprobs_from_states(
                         ref, ref_states, seqs, texts, stoi, device,
-                        temperature, sharpen, temperatures=temps)
+                        temperature, sharpen, temperatures=temps, return_steps=True)
                 else:
-                    logp_ref, _ = trajectory_logprobs(
-                        ref, seqs, texts, stoi, device, temperature, sharpen, temperatures=temps)
+                    per_ref, _ = trajectory_logprobs(
+                        ref, seqs, texts, stoi, device, temperature, sharpen,
+                        temperatures=temps, return_steps=True)
         else:
-            logp_ref = torch.zeros(len(chosen), device=logp.device)
+            per_ref = torch.zeros_like(per)
         losses = []
         for local, index in enumerate(chosen):
             trace = traces[index]
             item = rollouts[index]
-            lp = logp[local]
-            lp_ref = logp_ref[local]
-            leng = length[local]
-            if not torch.isfinite(lp) or not torch.isfinite(lp_ref):
+            real = int(mask[local].sum().item())
+            if real < 1:
+                trace["skipped"] = "empty"
+                continue
+            step_logp = per[local, :real]
+            step_ref = per_ref[local, :real]
+            if not torch.isfinite(step_logp).all() or not torch.isfinite(step_ref).all():
                 print(f"  non-finite logprob for {item['text']!r}, skipping", flush=True)
                 trace["skipped"] = "nonfinite_logprob"
                 continue
-            loss = reinforce_loss(lp, lp_ref, leng, trace["advantage"], kl_coef)
+            advantages = item.get("adv_steps")
+            if advantages is None:
+                advantages = trace["advantage"]
+            loss = token_reinforce_loss(step_logp, step_ref, advantages, kl_coef)
             scale = trace["temperature"] / _TEMP_REFERENCE
             losses.append(loss * scale / n)
             used += 1
             loss_acc += float(loss.detach())
-            trace["logp"] = float(lp.detach())
-            trace["length"] = int(leng.detach().item())
+            total = step_logp.detach().sum()
+            total_ref = step_ref.detach().sum()
+            trace["logp"] = float(total)
+            trace["length"] = real
             if kl_coef:
-                step_kl = float((lp.detach() - lp_ref.detach()) / leng.clamp(min=1))
+                step_kl = float((total - total_ref) / real)
                 kl_acc += step_kl
                 trace["kl"] = step_kl
             else:
                 trace["kl"] = 0.0
         if losses:
             torch.stack(losses).sum().backward()
+    if not apply:
+        return {
+            "loss": loss_acc / used if used else float("nan"),
+            "kl": kl_acc / used if used else float("nan"),
+            "used": used,
+            "grad": float("nan"),
+            "stepped": False,
+            "traces": traces,
+        }
     grad_norm = 0.0
     stepped = False
     if used:
@@ -842,7 +867,6 @@ def beam_factors(width):
 
     A factor f is one way to grow the next word: keep width/f prefixes and
     continue each of them f times. 16 gives 1, 2, 4, 8, 16. 9 gives 1, 3, 9.
-    The trainer no longer picks one of these. Continuation follows the scores.
     """
     width = int(width)
     if width < 1:
@@ -850,92 +874,279 @@ def beam_factors(width):
     return [factor for factor in range(1, width + 1) if width % factor == 0]
 
 
-def softmax_weights(scores, tau):
-    """Probability of each score. w_i = softmax(score_i / tau)."""
-    tau = float(tau)
-    if tau <= 0:
-        raise ValueError("temperature must be > 0")
-    scaled = np.asarray(scores, dtype=np.float64) / tau
-    if scaled.size == 0:
-        raise ValueError("no scores")
-    if not np.isfinite(scaled).all():
-        raise ValueError("scores must be finite")
-    scaled = scaled - np.max(scaled)
-    weights = np.exp(scaled)
-    return weights / float(weights.sum())
+def default_branches(n_words, width):
+    """How many drawings each segment of a line splits into.
 
-
-def effective_sample_size(weights):
-    """ESS = 1 / sum(w_i^2). Weights are a distribution, so they sum to 1."""
-    weights = np.asarray(weights, dtype=np.float64)
-    if weights.size == 0:
-        raise ValueError("no weights")
-    mass = float(np.sum(weights * weights))
-    if mass <= 0.0 or not math.isfinite(mass):
-        raise ValueError("weights have no mass")
-    return 1.0 / mass
-
-
-def systematic_resample(weights, rng):
-    """N draws with probability proportional to the weights, in parent order.
-
-    Positions are (i + U) / N against the cumulative weights. Children of one
-    parent then sit together, parent 0 first, so a sibling baseline can see them.
+    A play line is about 9 words, so 16 finished lines can fork twice and
+    still leave a few words in each segment. That tree is 4, then 2, then 2.
+    A line under 6 words has room for one fork: 4 roots, each continued so
+    the leaves still add up to the width. One word has no boundary to fork
+    at, so every drawing is its own line.
     """
-    weights = np.asarray(weights, dtype=np.float64)
-    count = int(weights.size)
-    if count == 0:
-        raise ValueError("no weights")
-    cumulative = np.cumsum(weights)
-    total = float(cumulative[-1])
-    if total <= 0.0 or not math.isfinite(total):
-        raise ValueError("weights have no mass")
-    cumulative = cumulative / total
-    cumulative[-1] = 1.0
-    positions = (np.arange(count) + float(rng.random())) / count
-    picks = np.searchsorted(cumulative, positions, side="left")
-    picks = np.clip(picks, 0, count - 1)
-    copies = np.bincount(picks, minlength=count)
-    parents = []
-    for parent, copies_of in enumerate(copies.tolist()):
-        if copies_of:
-            parents.extend([parent] * int(copies_of))
-    return parents
+    n_words = int(n_words)
+    width = int(width)
+    if n_words < 1 or width < 1:
+        raise ValueError("a tree needs at least one word and one drawing")
+    if n_words == 1 or width == 1:
+        return (width,)
+    if n_words >= 6 and width % 8 == 0 and width >= 16:
+        tail = width // 8
+        if tail >= 2:
+            return (4, 2, tail)
+    if width % 4 == 0 and width // 4 >= 2:
+        return (4, width // 4)
+    root = _balanced_root(width)
+    if root == width:
+        return (width,)
+    return (root, width // root)
 
 
-def select_parents(scores, tau, rng=None, ess_fraction=0.5):
-    """Who continues, the effective sample size, and whether we resampled.
+def _balanced_root(width):
+    """Divisor of width closest to its square root."""
+    best = 1
+    target = width ** 0.5
+    for factor in range(1, width + 1):
+        if width % factor:
+            continue
+        if abs(factor - target) < abs(best - target):
+            best = factor
+    return best
 
-    Weights are softmax(score / tau). ESS is 1 / sum(w^2). At or above
-    ess_fraction of the beam, every drawing continues once. Below that,
-    systematic resampling draws a new multiset. One drawing never resamples.
-    Similar scores therefore prune nothing. A few clear leaders concentrate,
-    and a weak drawing still has a small chance to continue.
+
+def even_ends(n_words, segments):
+    """Word counts at which each segment finishes. The last one is the whole line."""
+    n_words = int(n_words)
+    segments = int(segments)
+    if segments < 1 or segments > n_words:
+        raise ValueError("segments must fit in the words")
+    ends = []
+    for index in range(1, segments):
+        cut = (n_words * index) // segments
+        if ends and cut <= ends[-1]:
+            cut = ends[-1] + 1
+        ends.append(cut)
+    if ends and ends[-1] >= n_words:
+        raise ValueError("the last segment would be empty")
+    ends.append(n_words)
+    return ends
+
+
+def parse_tree(text):
+    """'4x2x2' becomes (4, 2, 2). 'auto' and an empty string mean the default."""
+    raw = str(text).strip().lower().replace("×", "x").replace("*", "x")
+    if not raw or raw == "auto":
+        return None
+    try:
+        branches = tuple(int(part) for part in raw.split("x"))
+    except ValueError as exc:
+        raise ValueError(f"tree must look like 4x2x2, got {text!r}") from exc
+    if not branches or any(branch < 1 for branch in branches):
+        raise ValueError(f"tree must look like 4x2x2, got {text!r}")
+    return branches
+
+
+def tree_plan(n_words, width, branches=None):
+    """Segment ends and how many continuations each segment draws.
+
+    Each entry is {"end", "copies"}. `end` is how many words are on the page
+    when that segment finishes. The copies multiply to `width`.
     """
-    scores = [float(score) for score in scores]
-    count = len(scores)
-    if count < 1:
-        raise ValueError("no scores")
-    fraction = float(ess_fraction)
-    if not 0.0 < fraction <= 1.0:
-        raise ValueError("ess fraction must be in (0, 1]")
-    weights = softmax_weights(scores, tau)
-    ess = effective_sample_size(weights)
-    if count == 1 or ess >= fraction * count:
-        return list(range(count)), ess, False
-    return systematic_resample(weights, rng or random), ess, True
+    n_words = int(n_words)
+    width = int(width)
+    if branches is None:
+        branches = default_branches(n_words, width)
+    else:
+        branches = tuple(int(branch) for branch in branches)
+    product = 1
+    for branch in branches:
+        if branch < 1:
+            raise ValueError("each branch must be at least 1")
+        product *= branch
+    if product != width:
+        raise ValueError(f"branches {branches} multiply to {product}, not {width}")
+    if len(branches) > n_words:
+        raise ValueError("more forks than words")
+    ends = even_ends(n_words, len(branches))
+    return [{"end": end, "copies": copies} for end, copies in zip(ends, branches)]
 
 
-def draw_select_temperature(low, high, rng=None):
-    """Log-uniform temperature on [low, high]. The ends are equally likely in log."""
-    low = float(low)
-    high = float(high)
-    if low <= 0.0 or high < low:
-        raise ValueError("select temperature needs 0 < min <= max")
-    if high == low:
-        return low
-    roll = random.random if rng is None else rng.random
-    return math.exp(math.log(low) + float(roll()) * (math.log(high) - math.log(low)))
+def tree_label(plan):
+    return "x".join(str(stage["copies"]) for stage in plan)
+
+
+def _leaves_under(node):
+    children = node.get("children") or []
+    if not children:
+        yield node
+        return
+    for child in children:
+        yield from _leaves_under(child)
+
+
+def chunk_advantages(leaves):
+    """Advantage of every node in a finished tree, keyed by id(node).
+
+    The value of a node is the mean reward of the leaves under it. A chunk's
+    advantage is that value minus the value of the prefix it grew from. A root
+    is compared with the mean of every finished line. A leaf with no siblings
+    therefore carries reward minus the group mean.
+    """
+    if not leaves:
+        raise ValueError("no leaves")
+    for leaf in leaves:
+        if leaf.get("children"):
+            raise ValueError("a leaf has children")
+        if not math.isfinite(float(leaf["reward"])):
+            raise ValueError("rewards must be finite")
+    values = {}
+
+    def value(node):
+        key = id(node)
+        if key in values:
+            return values[key]
+        children = node.get("children") or []
+        if not children:
+            values[key] = float(node["reward"])
+            return values[key]
+        total = 0.0
+        count = 0
+        for leaf in _leaves_under(node):
+            total += float(leaf["reward"])
+            count += 1
+        if count == 0:
+            raise ValueError("a node has no leaves")
+        values[key] = total / count
+        return values[key]
+
+    seen = []
+    marks = set()
+
+    def walk(node):
+        key = id(node)
+        if key in marks:
+            return
+        marks.add(key)
+        seen.append(node)
+        parent = node.get("parent")
+        if parent is not None:
+            walk(parent)
+
+    for leaf in leaves:
+        walk(leaf)
+    baseline = sum(float(leaf["reward"]) for leaf in leaves) / len(leaves)
+    out = {}
+    for node in seen:
+        parent = node.get("parent")
+        parent_value = baseline if parent is None else value(parent)
+        out[id(node)] = value(node) - parent_value
+    return out
+
+
+# Full lines in the from-base log run near 30 pen steps per character.
+FORK_STEPS_PER_CHAR = 30
+# Spread a chunk boundary across this many pen steps.
+ADV_RADIUS = 8
+# Play lines of 16 leaves. (4, 2, 2) is the one to use most often.
+MEDIUM_SHAPES = ((4, 2, 2), (4, 4), (2, 8), (16,))
+
+
+def _product(branches):
+    product = 1
+    for branch in branches:
+        product *= int(branch)
+    return product
+
+
+def segment_budgets(text, segments, steps_per_char=FORK_STEPS_PER_CHAR):
+    """How many new pen steps each fork may draw.
+
+    The last entry is None: that segment runs until the pen stops, which is
+    how a line is drawn at deploy time. Earlier entries split an estimate of
+    `steps_per_char` points per character into equal windows.
+    """
+    segments = int(segments)
+    if segments < 1:
+        raise ValueError("a line needs at least one segment")
+    if segments == 1:
+        return [None]
+    estimate = max(segments, int(round(float(steps_per_char) * max(len(str(text)), 1))))
+    window = max(1, estimate // segments)
+    return [window] * (segments - 1) + [None]
+
+
+def blend_token_advantages(advantage, length, parent=None, child=None, radius=ADV_RADIUS):
+    """One advantage per pen step.
+
+    The first steps fade in from the parent chunk. The last steps fade toward
+    the mean of the children. A segment with no neighbor keeps `advantage`
+    on every step, which is the flat-group case.
+    """
+    length = int(length)
+    if length < 1:
+        return []
+    radius = max(int(radius), 0)
+    own = float(advantage)
+    out = []
+    for t in range(length):
+        value = own
+        if parent is not None and radius > 0:
+            weight = min(1.0, t / float(radius))
+            value = (1.0 - weight) * float(parent) + weight * own
+        if child is not None and radius > 0:
+            weight = min(1.0, (length - 1 - t) / float(radius))
+            value = weight * value + (1.0 - weight) * float(child)
+        out.append(value)
+    return out
+
+
+def token_advantages(node, credited, radius=ADV_RADIUS):
+    """Per-step advantages for one node, from the chunk values around it."""
+    own = float(credited[id(node)])
+    parent = node.get("parent")
+    parent_adv = None if parent is None else float(credited[id(parent)])
+    children = node.get("children") or []
+    child_adv = None
+    if children:
+        child_adv = sum(float(credited[id(child)]) for child in children) / len(children)
+    return blend_token_advantages(
+        own, int(node["seq"].shape[0]),
+        parent=parent_adv, child=child_adv, radius=radius,
+    )
+
+
+def class_budget(source, n_words, beam, pinned=None, easy_leaves=0, novel_leaves=64):
+    """Leaf count and branch factors for one prompt.
+
+    A play line gets the 16-leaf tree. Half of those episodes use 4×2×2, and
+    the rest are 4×4, 2×8, or 16 separate lines. A dictionary line gets a few
+    separate drawings. A novel line gets many separate drawings. `pinned`
+    forces the play shape and is ignored for the other two.
+    Returns (width, branches).
+    """
+    if source == "words":
+        width = int(easy_leaves) if int(easy_leaves) > 0 else random.randint(4, 8)
+        if width < 1:
+            raise ValueError("a dictionary line needs at least one drawing")
+        return width, (width,)
+    if source == "novel":
+        width = int(novel_leaves)
+        if width < 1:
+            raise ValueError("a novel line needs at least one drawing")
+        return width, (width,)
+    width = int(beam)
+    if width < 1:
+        raise ValueError("beam width must be at least 1")
+    if pinned is not None:
+        branches = tuple(int(branch) for branch in pinned)
+        if _product(branches) != width:
+            raise ValueError(
+                f"branches {branches} multiply to {_product(branches)}, not {width}")
+        return width, branches
+    allowed = {shape for shape in MEDIUM_SHAPES if _product(shape) == width}
+    bag = [shape for shape in ([(4, 2, 2)] * 3 + [(4, 4), (2, 8), (16,)]) if shape in allowed]
+    if not bag:
+        return width, default_branches(max(int(n_words), 1), width)
+    return width, bag[random.randrange(len(bag))]
 
 
 def pick_prompts(prompts, n):

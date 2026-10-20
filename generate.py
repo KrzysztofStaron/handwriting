@@ -288,10 +288,14 @@ def sample_batch(model, texts, stoi, device, temperature=1.0, max_steps=None,
     last_hidden = None
     last_step = None
 
-    def remember(mask, pen_hidden, pen_step):
+    def remember(mask, pen_hidden, pen_step, stopped):
+        # `stopped` is the paper rule (the window passed the last character).
+        # A budget cut leaves it false so a caller can resume the same text.
         for i in range(count):
             if saved[i] is None and bool(mask[i]):
-                saved[i] = _row_state(pen_hidden, pen_step, i)
+                state = _row_state(pen_hidden, pen_step, i)
+                state["stopped"] = bool(stopped)
+                saved[i] = state
 
     with torch.no_grad():
         for t in range(limit):
@@ -338,7 +342,7 @@ def sample_batch(model, texts, stoi, device, temperature=1.0, max_steps=None,
                 reached, take, moved[:, 2], moved[:, 3], moved[:, 4],
                 t, min_steps, tail_steps)
             last_hidden, last_step = hidden, step
-            remember(done, hidden, step)
+            remember(done, hidden, step, True)
             active = active & ~done & ((t + 1) < budget)
             x = step.view(count, 1, 3)
             if count > 1 and t > 0 and t % 200 == 0:
@@ -355,7 +359,7 @@ def sample_batch(model, texts, stoi, device, temperature=1.0, max_steps=None,
     if bool(missing.any()):
         if last_hidden is None:
             raise RuntimeError("sampler stopped before any pen step")
-        remember(missing, last_hidden, last_step)
+        remember(missing, last_hidden, last_step, False)
     return sequences, saved
 
 
