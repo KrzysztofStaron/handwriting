@@ -130,7 +130,7 @@ uv run export_weights.py
 
 ### Post-training
 
-Both stages keep `models/best-4.pth` as a frozen KL anchor and never write that file. The update is sequence-level REINFORCE on the stroke log-probability: length-normalized, with a per-prompt baseline, and a KL penalty back toward the base model. `train_rl.py` starts from `models/rl-trocr.pth` when that file exists, and from the base model otherwise. The recognizer loop is described in `docs/rl.md`.
+Both stages keep `models/best-4.pth` as a frozen KL anchor and never write that file. The update is sequence-level REINFORCE on the stroke log-probability: length-normalized, with a per-prompt baseline, and a KL penalty back toward the base model. `train_rl.py` starts from `models/rl-trocr.pth` when that file exists, and from the base model otherwise. The recognizer loop is described in `docs/rl.md`. Starting it from `models/best-4.pth` on a new machine is `docs/from-best-4.md`.
 
 **Recognizer reward.** TrOCR-Large reads a rendering of each sample. The default score has four parts: plain CER, the visual distance in `docs/vcer.md`, TrOCR confidence, and straightness. Plain CER is 60% of the score and vCER is 20%, so a lookalike costs less than a full edit and a real edit still costs more. There is no exact-match bonus. `--reward vcer` is the visual distance alone. `--reward cer` is plain CER alone. Those two still keep their exact-match term, then the same confidence and straightness. Word spacing is logged and is not part of the score.
 

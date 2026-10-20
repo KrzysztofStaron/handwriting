@@ -96,7 +96,7 @@ About every `--block-minutes` (10), the loop saves weights, an optimizer sidecar
 
 Every update is appended to `events.jsonl` in the sheet directory. The dashboard is `uv run python rl_dashboard.py` at <http://127.0.0.1:8765/>. Reward and CER can be filtered to Novel, Words, R&J, or All. KL and stroke length stay on every update. Sample rows show the shape that was drawn (`4×2×2`, a flat count, or `sft` when a novel line was exact).
 
-A from-base run keeps its files out of `models/`:
+A new machine follows `docs/from-best-4.md`. A from-base run keeps its files out of `models/`:
 
 ```bash
 HF_HUB_DISABLE_XET=1 PYTORCH_ENABLE_MPS_FALLBACK=1 PYTHONUNBUFFERED=1 \
