@@ -1,6 +1,6 @@
 # Run the recognizer from best-4
 
-This starts a new training series from `models/best-4.pth` with the current pipeline. The weights, the optimizer, and the charts go in their own directory. `models/best-4.pth` is the frozen KL anchor and is never written. How the loop scores and credits a line is in `docs/rl.md`.
+This starts a new training series from `models/best-4.pth` with the current pipeline. The weights, the optimizer, and the charts go in their own directory. `models/best-4.pth` is the frozen KL anchor and is never written. How the loop scores and credits a line is in `docs/rl.md`. Earlier pipelines, and the commit that restores each one, are in `docs/milestones.md`.
 
 An empty save file is what makes the first launch load `best-4`. The same command later resumes the new weights.
 

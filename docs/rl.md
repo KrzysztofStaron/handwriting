@@ -2,7 +2,7 @@
 
 `train_rl.py` is the post-training loop that makes the Graves policy easier for TrOCR to read. One update is one line of text. The policy draws that line, TrOCR scores the finished ink, and a REINFORCE step follows. `models/best-4.pth` is the frozen KL anchor and is never written.
 
-Supervised training (`train.py`) comes first. Human best-of-k (`train_rlhf.py`) is a separate later loop on the same estimator. A process loads this code when it starts. A trainer already running keeps the sampler it started with until it is started again.
+Supervised training (`train.py`) comes first. Human best-of-k (`train_rlhf.py`) is a separate later loop on the same estimator. A process loads this code when it starts. A trainer already running keeps the sampler it started with until it is started again. Each earlier pipeline is one commit in `docs/milestones.md`.
 
 The serving API is one pass: the full string goes in, pen steps come out, and the line stops when the attention window passes the last character and the pen lifts. Training uses that same call.
 
