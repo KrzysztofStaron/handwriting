@@ -7,7 +7,7 @@ git switch --detach 7efa8d1   # the prefix beam with ESS resampling
 git switch master             # back to the current pipeline
 ```
 
-The current pipeline is `04a1312`. How to launch it from `best-4` is `docs/from-best-4.md`. What that loop does is `docs/rl.md`.
+The trainer on `master` is `5cf0d6e`. Commits after that one do not change the update. How to launch it from `best-4` is `docs/from-best-4.md`. What that loop does is `docs/rl.md`.
 
 ## Trainer
 
@@ -60,7 +60,7 @@ These commits do not change the update. The Trainer column is the pipeline that 
 | `0f76803` | 2026-10-20 | `983d835` | `run_aliases.json` shows a resumed process on the earlier run id. |
 | `819d37c` | 2026-10-20 | `4c18be4` | Sample tables add tilt, vCER, and spacing. |
 | `a0ff4c0` | 2026-10-20 | `c9fd6b7` | `docs/rl.md` describes the full-line tree. |
-| `04a1312` | 2026-10-20 | `5cf0d6e` | `docs/from-best-4.md`. This is current `master`. |
+| `04a1312` | 2026-10-20 | `5cf0d6e` | `docs/from-best-4.md`. |
 
 ## Restoring one
 
