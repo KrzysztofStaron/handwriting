@@ -593,6 +593,42 @@ def advantages(rewards, k, ema):
     return [r - baseline for r in rewards], new_ema
 
 
+def parent_advantages(rewards, parents, ema):
+    """Baseline for one word of the beam. Returns (advantages, new_ema).
+
+    The first word has no parent. Those drawings are one group, so a hard
+    word is not punished for being hard. A later word centers the children of
+    one drawing on that drawing's mean when it has two or more children. A
+    drawing that continues only once uses the EMA, and the EMA moves by the
+    mean of those single children.
+    """
+    if len(rewards) != len(parents):
+        raise ValueError("one parent mark per reward")
+    if not rewards:
+        raise ValueError("no rewards")
+    if all(parent is None for parent in parents):
+        return advantages(rewards, len(rewards), ema)
+    groups = {}
+    for index, parent in enumerate(parents):
+        groups.setdefault(parent, []).append(index)
+    out = [0.0] * len(rewards)
+    lone = []
+    for indexes in groups.values():
+        if len(indexes) == 1:
+            lone.append(indexes[0])
+            continue
+        group = [float(rewards[i]) for i in indexes]
+        base = sum(group) / len(group)
+        for i in indexes:
+            out[i] = float(rewards[i]) - base
+    if lone:
+        lone_rewards = [float(rewards[i]) for i in lone]
+        lone_advs, ema = advantages(lone_rewards, 1, ema)
+        for i, adv in zip(lone, lone_advs):
+            out[i] = adv
+    return out, ema
+
+
 # Eight lines at a time keeps the backward graph on a laptop while the
 # sampler still draws the whole update in one loop.
 _GRAD_CHUNK = 8
@@ -806,11 +842,100 @@ def beam_factors(width):
 
     A factor f is one way to grow the next word: keep width/f prefixes and
     continue each of them f times. 16 gives 1, 2, 4, 8, 16. 9 gives 1, 3, 9.
+    The trainer no longer picks one of these. Continuation follows the scores.
     """
     width = int(width)
     if width < 1:
         raise ValueError("beam width must be at least 1")
     return [factor for factor in range(1, width + 1) if width % factor == 0]
+
+
+def softmax_weights(scores, tau):
+    """Probability of each score. w_i = softmax(score_i / tau)."""
+    tau = float(tau)
+    if tau <= 0:
+        raise ValueError("temperature must be > 0")
+    scaled = np.asarray(scores, dtype=np.float64) / tau
+    if scaled.size == 0:
+        raise ValueError("no scores")
+    if not np.isfinite(scaled).all():
+        raise ValueError("scores must be finite")
+    scaled = scaled - np.max(scaled)
+    weights = np.exp(scaled)
+    return weights / float(weights.sum())
+
+
+def effective_sample_size(weights):
+    """ESS = 1 / sum(w_i^2). Weights are a distribution, so they sum to 1."""
+    weights = np.asarray(weights, dtype=np.float64)
+    if weights.size == 0:
+        raise ValueError("no weights")
+    mass = float(np.sum(weights * weights))
+    if mass <= 0.0 or not math.isfinite(mass):
+        raise ValueError("weights have no mass")
+    return 1.0 / mass
+
+
+def systematic_resample(weights, rng):
+    """N draws with probability proportional to the weights, in parent order.
+
+    Positions are (i + U) / N against the cumulative weights. Children of one
+    parent then sit together, parent 0 first, so a sibling baseline can see them.
+    """
+    weights = np.asarray(weights, dtype=np.float64)
+    count = int(weights.size)
+    if count == 0:
+        raise ValueError("no weights")
+    cumulative = np.cumsum(weights)
+    total = float(cumulative[-1])
+    if total <= 0.0 or not math.isfinite(total):
+        raise ValueError("weights have no mass")
+    cumulative = cumulative / total
+    cumulative[-1] = 1.0
+    positions = (np.arange(count) + float(rng.random())) / count
+    picks = np.searchsorted(cumulative, positions, side="left")
+    picks = np.clip(picks, 0, count - 1)
+    copies = np.bincount(picks, minlength=count)
+    parents = []
+    for parent, copies_of in enumerate(copies.tolist()):
+        if copies_of:
+            parents.extend([parent] * int(copies_of))
+    return parents
+
+
+def select_parents(scores, tau, rng=None, ess_fraction=0.5):
+    """Who continues, the effective sample size, and whether we resampled.
+
+    Weights are softmax(score / tau). ESS is 1 / sum(w^2). At or above
+    ess_fraction of the beam, every drawing continues once. Below that,
+    systematic resampling draws a new multiset. One drawing never resamples.
+    Similar scores therefore prune nothing. A few clear leaders concentrate,
+    and a weak drawing still has a small chance to continue.
+    """
+    scores = [float(score) for score in scores]
+    count = len(scores)
+    if count < 1:
+        raise ValueError("no scores")
+    fraction = float(ess_fraction)
+    if not 0.0 < fraction <= 1.0:
+        raise ValueError("ess fraction must be in (0, 1]")
+    weights = softmax_weights(scores, tau)
+    ess = effective_sample_size(weights)
+    if count == 1 or ess >= fraction * count:
+        return list(range(count)), ess, False
+    return systematic_resample(weights, rng or random), ess, True
+
+
+def draw_select_temperature(low, high, rng=None):
+    """Log-uniform temperature on [low, high]. The ends are equally likely in log."""
+    low = float(low)
+    high = float(high)
+    if low <= 0.0 or high < low:
+        raise ValueError("select temperature needs 0 < min <= max")
+    if high == low:
+        return low
+    roll = random.random if rng is None else rng.random
+    return math.exp(math.log(low) + float(roll()) * (math.log(high) - math.log(low)))
 
 
 def pick_prompts(prompts, n):

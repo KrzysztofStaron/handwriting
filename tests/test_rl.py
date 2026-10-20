@@ -29,6 +29,12 @@ from rl import (
     group_advantages,
     beam_factors,
     choose_label,
+    draw_select_temperature,
+    effective_sample_size,
+    parent_advantages,
+    select_parents,
+    softmax_weights,
+    systematic_resample,
     history_state,
     load_dictionary,
     word_line,
@@ -811,12 +817,13 @@ class BeamTests(unittest.TestCase):
         self.assertGreaterEqual(more[0].shape[0], 1)
         self.assertEqual(more[0].shape[1], 3)
 
-    def test_each_stage_scores_the_prefix_and_carries_its_history(self):
+    def test_equal_scores_continue_every_parent_once(self):
         import generate
         import train_rl
         from types import SimpleNamespace
 
         calls = []
+        recorded = []
 
         def fake_sample(model, texts, stoi, device, temperature=1.0, states=None,
                         return_state=False, window_sharpen=2.0):
@@ -834,11 +841,9 @@ class BeamTests(unittest.TestCase):
                 saved.append({"id": (call, index), "x": seq[-1].clone()})
             return seqs, saved
 
-        recorded = []
-
         def fake_reinforce(model, ref, rollouts, advs, stoi, device, temperature,
                            sharpen, kl_coef, optimizer, clip):
-            recorded.append(rollouts)
+            recorded.append((rollouts, list(advs)))
             return {
                 "loss": 0.0,
                 "kl": 0.0,
@@ -855,12 +860,12 @@ class BeamTests(unittest.TestCase):
 
             def score(self, images, refs):
                 self.refs.append(list(refs))
-                n = len(refs)
-                return [float(n - i) for i in range(n)], [0.0] * n, list(refs)
+                return [1.0] * len(refs), [0.0] * len(refs), list(refs)
 
         args = SimpleNamespace(
-            beam=9, factor=3, temp_min=0.5, temp_max=0.5, sharpen=1.0,
-            straightness=0.0, temperature=0.5, kl=0.0, clip=1.0, sample_every=0,
+            beam=9, factor=9, select_temp=0.2, temp_min=0.5, temp_max=0.5,
+            sharpen=1.0, straightness=0.0, spacing=0.0, temperature=0.5,
+            kl=0.0, clip=1.0, sample_every=0,
         )
         scorer = Scorer()
         real_sample = generate.sample_batch
@@ -878,7 +883,12 @@ class BeamTests(unittest.TestCase):
             train_rl.reinforce_step = real_step
 
         self.assertEqual(len(stages), 1)
-        self.assertEqual(stages[0][-1], 3)
+        select = stages[0][-1]
+        self.assertEqual(select["tau"], 0.2)
+        self.assertEqual(select["resampled"], [False, False, False])
+        for value in select["ess"]:
+            self.assertAlmostEqual(value, 9.0)
+        self.assertAlmostEqual(stages[0][5], 1.0)
         self.assertEqual(len(recorded), 3)
         self.assertEqual(stages[0][0]["used"], 27)
         self.assertEqual(len(stages[0][1]), 27)
@@ -894,128 +904,181 @@ class BeamTests(unittest.TestCase):
         self.assertIsNone(calls[0]["states"])
         self.assertEqual(
             [item["id"] for item in calls[1]["states"]],
-            [(0, parent) for parent in range(3) for _ in range(3)],
+            [(0, parent) for parent in range(9)],
         )
-        self.assertEqual([item["text"] for item in recorded[0]], ["john"] * 9)
-        self.assertTrue(all("state" not in item for item in recorded[0]))
+        self.assertEqual([item["text"] for item in recorded[0][0]], ["john"] * 9)
+        self.assertTrue(all("state" not in item for item in recorded[0][0]))
+        self.assertTrue(all(adv == 0.0 for adv in recorded[0][1]))
 
-        stage1 = recorded[1]
+        stage1 = recorded[1][0]
         self.assertEqual([item["text"] for item in stage1], ["john is"] * 9)
-        for parent in range(3):
-            for item in stage1[parent * 3:(parent + 1) * 3]:
-                self.assertEqual(item["state"]["id"], (0, parent))
-                self.assertEqual(len(item["history"]), 1)
-                self.assertEqual(item["history"][0][0], "john")
-                self.assertEqual(item["seq"].shape[0], 4)
-                self.assertEqual(float(item["history"][0][1][0, 0]), parent)
+        for parent, item in enumerate(stage1):
+            self.assertEqual(item["state"]["id"], (0, parent))
+            self.assertEqual(len(item["history"]), 1)
+            self.assertEqual(item["history"][0][0], "john")
+            self.assertEqual(item["seq"].shape[0], 4)
+            self.assertEqual(float(item["history"][0][1][0, 0]), parent)
 
-        # The top three of stage 1 are the first parent's three continuations.
-        for child, mark in enumerate((100.0, 101.0, 102.0)):
-            for item in recorded[2][child * 3:(child + 1) * 3]:
-                self.assertEqual(item["text"], "john is a")
-                self.assertEqual(item["state"]["id"], (1, child))
-                self.assertEqual([past[0] for past in item["history"]], ["john", "john is"])
-                self.assertEqual(float(item["history"][0][1][0, 0]), 0.0)
-                self.assertEqual(float(item["history"][1][1][0, 0]), mark)
-                self.assertEqual(item["seq"].shape[0], 4)
+        for parent, item in enumerate(recorded[2][0]):
+            self.assertEqual(item["text"], "john is a")
+            self.assertEqual(item["state"]["id"], (1, parent))
+            self.assertEqual([past[0] for past in item["history"]], ["john", "john is"])
+            self.assertEqual(float(item["history"][0][1][0, 0]), parent)
+            self.assertEqual(float(item["history"][1][1][0, 0]), 100.0 + parent)
+            self.assertEqual(item["seq"].shape[0], 4)
 
-    def test_the_factor_decides_who_continues(self):
+    def test_a_peaked_score_concentrates_on_the_leader(self):
         import generate
         import train_rl
         from types import SimpleNamespace
 
-        def grow(factor):
-            calls = []
+        calls = []
+        recorded = []
 
-            def fake_sample(model, texts, stoi, device, temperature=1.0, states=None,
-                            return_state=False, window_sharpen=2.0):
-                calls.append(states)
-                seqs, saved = [], []
-                for index in range(len(texts)):
-                    seq = torch.zeros(2, 3)
-                    seq[:, 0] = index
-                    seqs.append(seq)
-                    saved.append({"id": (len(calls) - 1, index)})
-                return seqs, saved
+        def fake_sample(model, texts, stoi, device, temperature=1.0, states=None,
+                        return_state=False, window_sharpen=2.0):
+            call = len(calls)
+            calls.append(states)
+            seqs, saved = [], []
+            for index in range(len(texts)):
+                seq = torch.zeros(2, 3)
+                seq[:, 0] = call * 100 + index
+                seqs.append(seq)
+                saved.append({"id": (call, index)})
+            return seqs, saved
 
-            def fake_reinforce(*_args, **_kwargs):
-                return {"loss": 0.0, "kl": 0.0, "used": 9, "grad": 0.0,
-                        "stepped": False, "traces": [{}] * 9}
+        def fake_reinforce(model, ref, rollouts, advs, stoi, device, temperature,
+                           sharpen, kl_coef, optimizer, clip):
+            recorded.append(rollouts)
+            return {"loss": 0.0, "kl": 0.0, "used": len(rollouts), "grad": 0.0,
+                    "stepped": False, "traces": [{} for _ in rollouts]}
 
-            class Scorer:
-                last_confidence = None
+        class Scorer:
+            last_confidence = None
 
-                def score(self, images, refs):
-                    n = len(refs)
-                    return [float(n - i) for i in range(n)], [0.0] * n, list(refs)
+            def score(self, images, refs):
+                n = len(refs)
+                return [float(n - i) for i in range(n)], [0.0] * n, list(refs)
 
-            args = SimpleNamespace(
-                beam=9, factor=factor, temp_min=0.5, temp_max=0.5, sharpen=1.0,
-                straightness=0.0, temperature=0.5, kl=0.0, clip=1.0, sample_every=0,
-            )
-            real_sample, real_step = generate.sample_batch, train_rl.reinforce_step
-            generate.sample_batch = fake_sample
-            train_rl.reinforce_step = fake_reinforce
-            try:
-                stages = list(train_rl.beam_stages(
-                    None, None, Scorer(), None, ["john is"],
-                    {ch: 0 for ch in "john is"}, 1.0, "cpu", args, None,
-                ))
-            finally:
-                generate.sample_batch = real_sample
-                train_rl.reinforce_step = real_step
-            self.assertEqual(stages[0][-1], factor)
-            return calls
-
-        wide = grow(1)
-        self.assertIsNone(wide[0])
-        self.assertEqual([item["id"] for item in wide[1]], [(0, parent) for parent in range(9)])
-        narrow = grow(9)
-        self.assertEqual([item["id"] for item in narrow[1]], [(0, 0)] * 9)
-
-        seen = []
-        real_choice = train_rl.random.choice
-
-        def record(options):
-            seen.append(list(options))
-            return options[-1]
-
-        train_rl.random.choice = record
+        args = SimpleNamespace(
+            beam=9, select_temp=0.01, temp_min=0.5, temp_max=0.5, sharpen=1.0,
+            straightness=0.0, spacing=0.0, temperature=0.5, kl=0.0, clip=1.0,
+            sample_every=0,
+        )
+        real_sample, real_step = generate.sample_batch, train_rl.reinforce_step
+        generate.sample_batch = fake_sample
+        train_rl.reinforce_step = fake_reinforce
         try:
-            def fake_sample(model, texts, stoi, device, temperature=1.0, states=None,
-                            return_state=False, window_sharpen=2.0):
-                seqs = [torch.zeros(2, 3) for _ in texts]
-                return seqs, [{"id": index} for index in range(len(texts))]
-
-            def fake_reinforce(*_args, **_kwargs):
-                return {"loss": 0.0, "kl": 0.0, "used": 9, "grad": 0.0,
-                        "stepped": False, "traces": [{}] * 9}
-
-            class Scorer:
-                last_confidence = None
-
-                def score(self, images, refs):
-                    return [1.0] * len(refs), [0.0] * len(refs), list(refs)
-
-            args = SimpleNamespace(
-                beam=9, temp_min=0.5, temp_max=0.5, sharpen=1.0,
-                straightness=0.0, temperature=0.5, kl=0.0, clip=1.0, sample_every=0,
-            )
-            real_sample, real_step = generate.sample_batch, train_rl.reinforce_step
-            generate.sample_batch = fake_sample
-            train_rl.reinforce_step = fake_reinforce
-            try:
-                stages = list(train_rl.beam_stages(
-                    None, None, Scorer(), None, ["john"],
-                    {"j": 0, "o": 1, "h": 2, "n": 3}, 1.0, "cpu", args, None,
-                ))
-            finally:
-                generate.sample_batch = real_sample
-                train_rl.reinforce_step = real_step
+            stages = list(train_rl.beam_stages(
+                None, None, Scorer(), None, ["john is"],
+                {ch: 0 for ch in "john is"}, 1.0, "cpu", args, None,
+            ))
         finally:
-            train_rl.random.choice = real_choice
-        self.assertEqual(seen, [[1, 3, 9]])
-        self.assertEqual(stages[0][-1], 9)
+            generate.sample_batch = real_sample
+            train_rl.reinforce_step = real_step
+
+        select = stages[0][-1]
+        self.assertEqual(select["tau"], 0.01)
+        self.assertEqual(select["resampled"], [True, True])
+        for value in select["ess"]:
+            self.assertLess(value, 4.5)
+        self.assertIsNone(calls[0])
+        self.assertEqual([item["id"] for item in calls[1]], [(0, 0)] * 9)
+        self.assertIsNone(stages[0][5])
+        for item in recorded[1]:
+            self.assertEqual(item["state"]["id"], (0, 0))
+            self.assertEqual(item["history"][0][0], "john")
+            self.assertEqual(float(item["history"][0][1][0, 0]), 0.0)
+
+    def test_siblings_share_a_mean_and_a_lone_child_uses_the_ema(self):
+        rewards = [1.0, 3.0, 10.0, 0.0, 2.0]
+        parents = [0, 0, 1, 4, 4]
+        advs, ema = parent_advantages(rewards, parents, 5.0)
+        self.assertEqual(advs, [-1.0, 1.0, 5.0, -1.0, 1.0])
+        self.assertAlmostEqual(ema, 5.5)
+
+    def test_the_first_word_is_one_group(self):
+        advs, ema = parent_advantages([1.0, 3.0, 2.0], [None, None, None], 9.0)
+        self.assertEqual(advs, [-1.0, 1.0, 0.0])
+        self.assertEqual(ema, 9.0)
+
+    def test_a_hard_prefix_is_not_punished_for_being_hard(self):
+        advs, ema = parent_advantages([0.1, 0.1, 0.9, 0.9], [0, 0, 1, 1], None)
+        self.assertEqual(advs, [0.0, 0.0, 0.0, 0.0])
+        self.assertIsNone(ema)
+
+    def test_every_lineage_alone_uses_the_ema(self):
+        advs, ema = parent_advantages([1.0, 3.0], [0, 1], None)
+        self.assertEqual(advs, [-1.0, 1.0])
+        self.assertEqual(ema, 2.0)
+
+    def test_equal_weights_have_full_ess_and_stay_in_order(self):
+        weights = softmax_weights([2.0, 2.0, 2.0, 2.0], 0.3)
+        self.assertTrue(np.allclose(weights, 0.25))
+        self.assertAlmostEqual(effective_sample_size(weights), 4.0)
+        parents, ess, resampled = select_parents([1.0, 1.0, 1.0, 1.0], 0.2, random.Random(0))
+        self.assertEqual(parents, [0, 1, 2, 3])
+        self.assertFalse(resampled)
+        self.assertAlmostEqual(ess, 4.0)
+        for seed in range(10):
+            self.assertEqual(
+                systematic_resample(np.ones(5) / 5, random.Random(seed)),
+                [0, 1, 2, 3, 4],
+            )
+
+    def test_a_clear_lead_concentrates_and_the_worst_can_still_live(self):
+        parents, ess, resampled = select_parents(
+            [float(9 - i) for i in range(9)], 0.01, random.Random(0))
+        self.assertTrue(resampled)
+        self.assertLess(ess, 4.5)
+        self.assertEqual(parents, [0] * 9)
+        self.assertAlmostEqual(
+            effective_sample_size(softmax_weights([10.0, 0.0, 0.0, 0.0], 0.01)),
+            1.0, places=3,
+        )
+        parents, ess, resampled = select_parents([0.2], 0.01, random.Random(0))
+        self.assertEqual(parents, [0])
+        self.assertFalse(resampled)
+        self.assertAlmostEqual(ess, 1.0)
+
+        scores = [3.0, 2.0, 1.0, 0.0]
+        weights = softmax_weights(scores, 0.7)
+        self.assertGreater(float(weights[-1]), 0.0)
+        self.assertLess(effective_sample_size(weights), 2.0)
+        best = 0
+        worst = 0
+        seen = set()
+        for seed in range(400):
+            drawn, _, did = select_parents(scores, 0.7, random.Random(seed))
+            self.assertTrue(did)
+            self.assertEqual(drawn, sorted(drawn))
+            self.assertEqual(len(drawn), 4)
+            seen.add(tuple(drawn))
+            best += drawn.count(0)
+            worst += drawn.count(3)
+        self.assertGreater(len(seen), 1)
+        self.assertGreater(worst, 0)
+        self.assertGreater(best, worst)
+        again = systematic_resample(weights, random.Random(7))
+        self.assertEqual(again, systematic_resample(weights, random.Random(7)))
+
+    def test_select_temperature_is_log_uniform(self):
+        class Fixed:
+            def __init__(self, value):
+                self.value = value
+
+            def random(self):
+                return self.value
+
+        self.assertAlmostEqual(draw_select_temperature(0.05, 0.40, Fixed(0.0)), 0.05)
+        high = draw_select_temperature(0.05, 0.40, Fixed(0.999999))
+        self.assertLess(high, 0.40)
+        self.assertGreater(high, 0.39)
+        self.assertEqual(draw_select_temperature(0.2, 0.2, Fixed(0.3)), 0.2)
+        with self.assertRaises(ValueError):
+            draw_select_temperature(0.0, 0.4)
+        with self.assertRaises(ValueError):
+            draw_select_temperature(0.4, 0.05)
 
 
 if __name__ == "__main__":

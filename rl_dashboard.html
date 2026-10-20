@@ -675,7 +675,9 @@ function sessionLine(session) {
   if (session.reward) bits.push(session.reward);
   if (session.straightness) bits.push("straight " + session.straightness);
   if (session.spacing) bits.push("spacing " + session.spacing);
-  if (session.factors && session.beam) bits.push("beam " + session.beam);
+  if (session.select_min != null && session.select_max != null && session.beam) {
+    bits.push("beam " + session.beam + "  τ " + session.select_min + "–" + session.select_max);
+  } else if (session.factors && session.beam) bits.push("beam " + session.beam);
   else if (session.beam) bits.push("beam " + session.beam + " × " + (session.keep || "?"));
   if (session.novel) bits.push("novel " + session.novel);
   if (session.words) bits.push("words " + session.words);
@@ -945,7 +947,13 @@ function render() {
   const genPick = document.getElementById("gen-pick");
   genPick.innerHTML = samples.slice().reverse().map((row) => {
     const width = row.beam || session.beam;
-    const mode = row.factor && width ? `${width} / ${row.factor} x ${row.factor} · ` : "";
+    let mode = "";
+    if (row.select_tau != null) {
+      const tau = Number(row.select_tau);
+      mode = `τ ${Number.isFinite(tau) ? tau.toFixed(2) : row.select_tau} · `;
+    } else if (row.factor && width) {
+      mode = `${width} / ${row.factor} x ${row.factor} · `;
+    }
     return `<option value="${row.update}">${row.update} · ${mode}reward ${num(row.reward_mean, 3)} · CER ${num(row.cer_mean, 3)}</option>`;
   }).join("");
   if (chosen) genPick.value = String(chosen.update);

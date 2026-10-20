@@ -1,10 +1,11 @@
 """Post-train the handwriting policy with a TrOCR-Large visual reward.
 
 Each update grows one line a word at a time. The first word is drawn `--beam`
-times from a blank page. A random divisor f of that width decides the rest:
-the best beam/f prefixes continue, and each is continued f times. TrOCR scores
-the ink of everything written so far against those words plus the word just
-added. The gradient is applied only to the new strokes.
+times from a blank page. Later words continue every drawing while the scores
+stay close. When a few pull ahead, the next word is redrawn with probability
+softmax(score / τ). TrOCR scores the ink of everything written so far against
+those words plus the word just added. The gradient is applied only to the new
+strokes.
 The 10 samples at a checkpoint are only a review sheet of the full sentence.
 Some training lines are ten short random words from the model alphabet, and
 some are lowercase dictionary words no longer than a play line, so the policy
@@ -31,7 +32,6 @@ reads that file while training runs:
 import argparse
 import json
 import os
-import random
 import re
 import time
 from pathlib import Path
@@ -43,21 +43,21 @@ from rl import (
     BASE_CKPT,
     TrocrScorer,
     add_policy_args,
-    advantages,
-    beam_factors,
     choose_label,
     load_dictionary,
     consistency_sheet,
+    draw_select_temperature,
     draw_temperatures,
     line_straightness,
     spacing_inconsistency,
     load_policy_and_ref,
-    select_top,
+    parent_advantages,
     refuse_overwrite_base,
     reinforce_step,
     resolve_prompts,
     reveal,
     save_policy,
+    select_parents,
     set_seed,
     short,
     strokes_to_images,
@@ -86,10 +86,20 @@ def parse_args(argv=None):
     parser.add_argument("-k", type=int, default=8,
                         help="Unused by the word beam. The width is --beam.")
     parser.add_argument("--beam", type=int, default=16,
-                        help="Drawings of each prefix. Each line picks a random divisor f "
-                             "of this width, keeps beam/f prefixes, and continues each f times.")
+                        help="Drawings of each prefix. Every drawing continues while the "
+                             "scores stay close. When a few pull ahead, the next word is "
+                             "redrawn with probability softmax(score / τ).")
     parser.add_argument("--keep", type=int, default=4,
-                        help="Unused. The collapse factor is a random divisor of --beam.")
+                        help="Unused. Who continues is chosen from the scores.")
+    parser.add_argument("--factor", type=int, default=None,
+                        help="Unused. Who continues is chosen from the scores.")
+    parser.add_argument("--select-min", type=float, default=0.05,
+                        help="Lowest selection temperature. τ is drawn once per line, "
+                             "log-uniform up to --select-max. A small τ concentrates "
+                             "sooner. This is not --tau.")
+    parser.add_argument("--select-max", type=float, default=0.40,
+                        help="Highest selection temperature. A large τ keeps the weights "
+                             "flat, so similar scores continue everyone.")
     parser.add_argument("--novel", type=float, default=0.25,
                         help="Chance a training line is ten random words of at most 4 "
                              "letters or digits from the model alphabet, instead of a "
@@ -375,11 +385,13 @@ def beam_stages(model, ref, scorer, optimizer, prompts, stoi, std, device, args,
                 log=None, block=None, out_dir=None, counter=None):
     """Grow one prompt word by word. Yield one update for the whole line.
 
-    The first stage draws `--beam` copies of the first word. A random divisor
-    f of that width then keeps beam/f prefixes and continues each one f times.
-    The picture is every stroke so far, and the target is every word so far,
-    including the word just added. The gradient covers only the new strokes.
-    The logged update averages every drawing in the line.
+    The first stage draws `--beam` copies of the first word. After each word,
+    weights are softmax(score / τ). τ is drawn once for the line. While the
+    effective sample size stays at least half the beam, every drawing continues
+    once. Below that, systematic resampling draws the next word in proportion
+    to the weights. The picture is every stroke so far, and the target is
+    every word so far, including the word just added. The gradient covers only
+    the new strokes. The logged update averages every drawing in the line.
     """
     from generate import sample_batch
 
@@ -395,16 +407,18 @@ def beam_stages(model, ref, scorer, optimizer, prompts, stoi, std, device, args,
     )
     prefixes = word_prefixes(text)
     width = args.beam
-    factors = beam_factors(width)
-    factor = getattr(args, "factor", None)
-    if factor is None:
-        factor = random.choice(factors)
-    factor = int(factor)
-    if factor not in factors:
-        raise ValueError(f"factor {factor} does not divide beam {width}")
-    keep = width // factor
-    branch = factor
-    print(f"    {text!r}  {len(prefixes)} words  {width} / {factor} x {factor}",
+    if width < 1:
+        raise ValueError("beam width must be at least 1")
+    tau = getattr(args, "select_temp", None)
+    if tau is None:
+        tau = draw_select_temperature(
+            getattr(args, "select_min", 0.05),
+            getattr(args, "select_max", 0.40),
+        )
+    tau = float(tau)
+    if tau <= 0.0:
+        raise ValueError("select temperature must be > 0")
+    print(f"    {text!r}  {len(prefixes)} words  beam {width}  τ {tau:.3f}",
           flush=True)
     update_no = None
     if counter is not None:
@@ -417,22 +431,21 @@ def beam_stages(model, ref, scorer, optimizer, prompts, stoi, std, device, args,
     word_stats = []
     all_rewards, all_cers, all_hyps, all_refs = [], [], [], []
     all_draws, all_wcors = [], []
+    ess_values = []
+    resampled_flags = []
     sheet_name = None
     survivors = None
     for stage, prefix in enumerate(prefixes):
         if stage == 0:
             states = None
-            parents = [None] * width
+            carried = [None] * width
             histories = [[] for _ in range(width)]
+            lineage = [None] * width
         else:
-            states = []
-            parents = []
-            histories = []
-            for survivor in survivors:
-                for _ in range(branch):
-                    states.append(survivor["state"])
-                    parents.append(survivor["seq"])
-                    histories.append(list(survivor["history"]))
+            states = [item["state"] for item in survivors]
+            carried = [item["seq"] for item in survivors]
+            histories = [list(item["history"]) for item in survivors]
+            lineage = [item["parent"] for item in survivors]
         temperatures = draw_temperatures(width, args.temp_min, args.temp_max)
         print(f"    {prefix!r}  {width} draws", flush=True)
         sequences, new_states = sample_batch(
@@ -442,10 +455,10 @@ def beam_stages(model, ref, scorer, optimizer, prompts, stoi, std, device, args,
         )
         full = []
         for index, seq in enumerate(sequences):
-            if parents[index] is None:
+            if carried[index] is None:
                 full.append(seq)
             else:
-                full.append(torch.cat([parents[index], seq], dim=0))
+                full.append(torch.cat([carried[index], seq], dim=0))
             print(f"      draw {index + 1}/{width}  temp {temperatures[index]:.2f}"
                   f"  +{seq.shape[0]}  ({full[-1].shape[0]} steps)", flush=True)
         if log is not None:
@@ -471,8 +484,7 @@ def beam_stages(model, ref, scorer, optimizer, prompts, stoi, std, device, args,
                 float(reward) - args.straightness * bend - args.spacing * space
                 for reward, bend, space in zip(rewards, bends, spaces)
             ]
-        group = width if stage == 0 else branch
-        advs, ema = advantages(rewards, group, ema)
+        advs, ema = parent_advantages(rewards, lineage, ema)
         rollouts = []
         for index, seq in enumerate(sequences):
             item = {"text": prefix, "seq": seq, "temperature": temperatures[index]}
@@ -504,15 +516,22 @@ def beam_stages(model, ref, scorer, optimizer, prompts, stoi, std, device, args,
             bends,
             spaces,
         )
-        kept = select_top(rewards, keep)
-        print("    keep " + ", ".join(f"{rewards[i]:.3f}" for i in kept), flush=True)
+        parents, ess, resampled = select_parents(rewards, tau)
+        ess_values.append(ess)
+        resampled_flags.append(bool(resampled))
+        if resampled:
+            print(f"    resample ess {ess:.1f}/{width} tau {tau:.2f} "
+                  f"parents {len(set(parents))}", flush=True)
+        else:
+            print(f"    keep all ess {ess:.1f}/{width} tau {tau:.2f}", flush=True)
         survivors = [
             {
-                "seq": full[i],
-                "state": new_states[i],
-                "history": list(histories[i]) + [(prefix, sequences[i])],
+                "seq": full[parent],
+                "state": new_states[parent],
+                "history": list(histories[parent]) + [(prefix, sequences[parent])],
+                "parent": parent,
             }
-            for i in kept
+            for parent in parents
         ]
         word_stats.append(stats)
         all_rewards.extend(rewards)
@@ -523,7 +542,8 @@ def beam_stages(model, ref, scorer, optimizer, prompts, stoi, std, device, args,
         all_wcors.extend(wcors)
     yield (
         summarize_line(word_stats), all_rewards, all_cers, all_hyps, all_refs,
-        ema, all_draws, all_wcors, sheet_name, source, factor,
+        ema, all_draws, all_wcors, sheet_name, source,
+        {"tau": tau, "ess": ess_values, "resampled": resampled_flags},
     )
 
 
@@ -613,6 +633,8 @@ def main():
         raise SystemExit("--k and --batch must be >= 1")
     if args.beam < 1:
         raise SystemExit("--beam must be at least 1")
+    if args.select_min <= 0 or args.select_max < args.select_min:
+        raise SystemExit("--select-min must be > 0 and --select-max must be >= --select-min")
     if not 0.0 <= args.novel <= 1.0:
         raise SystemExit("--novel must be between 0 and 1")
     if not 0.0 <= args.words <= 1.0:
@@ -667,7 +689,7 @@ def main():
         print("sampler on cpu (one pen step at a time is faster there); TrOCR on mps",
               flush=True)
     print(f"KL anchor: {args.ref}", flush=True)
-    print(f"word beam {args.beam}, factors {beam_factors(args.beam)}   "
+    print(f"word beam {args.beam}, select τ {args.select_min:g}–{args.select_max:g}   "
           f"checkpoint about every {args.block_minutes:g} min", flush=True)
     print(f"temperature: normal around {(args.temp_min + args.temp_max) / 2:g}, "
           f"kept inside {args.temp_min:g} to {args.temp_max:g}",
@@ -760,7 +782,8 @@ def main():
             "batch": args.batch,
             "k": args.k,
             "beam": args.beam,
-            "factors": beam_factors(args.beam),
+            "select_min": args.select_min,
+            "select_max": args.select_max,
             "novel": 0.0 if args.text else args.novel,
             "words": 0.0 if args.text else args.words,
             "temperature_min": args.temp_min,
@@ -789,7 +812,7 @@ def main():
                 while True:
                     counter = [updates]
                     stop_block = False
-                    for stats, rewards, cers, hyps, refs, ema, draws, wcors, sheet_name, source, factor in beam_stages(
+                    for stats, rewards, cers, hyps, refs, ema, draws, wcors, sheet_name, source, select in beam_stages(
                         model, ref, scorer, optimizer, prompts, stoi, std, device, args, ema,
                         log=log, block=index, out_dir=out_dir, counter=counter,
                     ):
@@ -811,8 +834,11 @@ def main():
                         full_text = refs[-1]
                         finished = [i for i, ref in enumerate(refs) if ref == full_text]
                         best_i = max(finished, key=lambda i: rewards[i])
+                        ess_mean = sum(select["ess"]) / len(select["ess"])
+                        resampled = sum(1 for flag in select["resampled"] if flag)
                         print(f"  update {updates}  {elapsed:.1f} min  "
-                              f"{args.beam} / {factor} x {factor}  "
+                              f"beam {args.beam}  τ {select['tau']:.3f}  "
+                              f"ess {ess_mean:.1f}  resampled {resampled}/{len(select['ess'])}  "
                               f"reward {reward_mean:.3f}  "
                               f"cer {cer_mean:.3f}  "
                               f"{wcer_bit}"
@@ -848,7 +874,9 @@ def main():
                             ),
                             "source": source,
                             "beam": args.beam,
-                            "factor": factor,
+                            "select_tau": select["tau"],
+                            "ess_mean": ess_mean,
+                            "resampled": resampled,
                             "example": {"text": full_text, "hyp": hyps[best_i]},
                             "sheet": sheet_name,
                             "draws": draws,
