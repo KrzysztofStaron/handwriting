@@ -40,6 +40,11 @@ app = Flask(__name__)
 def prepare(text):
     """Transliterate Polish, then reject anything still outside the vocab."""
     text = text.translate(_TRANSLIT)
+    # Match the RL pipeline's lines: no leading/trailing whitespace and single
+    # spaces. A trailing space (the staron.dev frontend sends text + " ") makes the
+    # stop rule wait for the window to pass the space, so the model starts drawing
+    # an extra character after the last word.
+    text = " ".join(text.split())
     bad = sorted(set(_DISALLOWED.findall(text)))
     if bad:
         raise ValueError(f"input contains characters outside the vocab: {bad}")
