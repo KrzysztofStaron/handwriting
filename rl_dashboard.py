@@ -10,7 +10,9 @@ directory's notes.json. The page polls once a second.
 """
 
 import argparse
+import gzip
 import json
+import threading
 import re
 import subprocess
 import sys
@@ -20,7 +22,7 @@ from pathlib import Path
 from urllib.parse import parse_qs, unquote, urlparse
 
 from rl_events import (
-    EVENTS_NAME, apply_run_aliases, load_run_aliases, parse_stdout_log, read_events, write_events,
+    EVENTS_NAME, apply_run_aliases, load_run_aliases, parse_stdout_log, write_events,
 )
 
 PAGE = Path(__file__).with_name("rl_dashboard.html")
@@ -32,7 +34,149 @@ _EVENT_TYPE = re.compile(r'"type": "([^"]+)"')
 _EVENT_RUN = re.compile(r'"run": "([^"]+)"')
 _LABEL_LIMIT = 80
 _COMMENT_LIMIT = 4000
-_INDEX_CACHE = {}
+_FULL_UPDATES = 60
+_LOGS = {}
+_LOGS_LOCK = threading.Lock()
+
+
+class EventLog:
+    """events.jsonl parsed once and then followed by its appended bytes.
+
+    Line numbers match read_events, so the page's offset still counts lines.
+    Draw events are dropped and older updates lose their per-draw list, which
+    is most of the file. /api/update fetches one full update when needed.
+    """
+
+    def __init__(self, path):
+        self.path = Path(path)
+        self.lock = threading.Lock()
+        self._clear()
+
+    def _clear(self):
+        self.pos = 0
+        self.lines = 0
+        self.head = b""
+        self.events = []          # (line, compact event)
+        self.full = {}            # line -> full update, newest only
+        self.update_lines = []    # line numbers of update events
+        self.where = {}           # line -> byte offset, for updates
+        self.sessions = []        # raw session events
+        self.updates = {}         # raw run -> count
+        self.reviews = {}
+
+    def refresh(self):
+        with self.lock:
+            try:
+                size = self.path.stat().st_size
+            except OSError:
+                self._clear()
+                return
+            with open(self.path, "rb") as handle:
+                head = handle.read(256)
+                if size < self.pos or (self.head and not head.startswith(self.head[:len(head)])):
+                    self._clear()
+                if size == self.pos:
+                    return
+                handle.seek(self.pos)
+                chunk = handle.read(size - self.pos)
+            end = chunk.rfind(b"\n")
+            if end < 0:
+                return
+            chunk = chunk[:end + 1]
+            if not self.head:
+                self.head = head
+            start = self.pos
+            for raw in chunk.split(b"\n")[:-1]:
+                line_no = self.lines
+                self.lines += 1
+                where = start
+                start += len(raw) + 1
+                if not raw.strip():
+                    continue
+                try:
+                    event = json.loads(raw.decode("utf-8"))
+                except (UnicodeDecodeError, json.JSONDecodeError):
+                    continue
+                if not isinstance(event, dict):
+                    continue
+                self._add(line_no, where, event)
+            self.pos += len(chunk)
+
+    def _add(self, line_no, where, event):
+        kind = event.get("type")
+        run = event.get("run") or ""
+        if kind == "draw":
+            return
+        if kind == "session":
+            self.sessions.append(event)
+        elif kind == "review":
+            self.reviews[run] = self.reviews.get(run, 0) + 1
+        elif kind == "update":
+            self.updates[run] = self.updates.get(run, 0) + 1
+            self.update_lines.append(line_no)
+            self.where[line_no] = where
+            self.full[line_no] = event
+            if len(self.full) > _FULL_UPDATES:
+                old = self.update_lines[-_FULL_UPDATES - 1]
+                self.full.pop(old, None)
+            if "draws" in event:
+                compact = {k: v for k, v in event.items() if k != "draws"}
+                compact["draws_omitted"] = len(event.get("draws") or [])
+                event = compact
+        self.events.append((line_no, event))
+
+    def since(self, offset):
+        """(events from line `offset`, next offset, reset), like read_events."""
+        self.refresh()
+        with self.lock:
+            reset = False
+            if offset > self.lines:
+                offset = 0
+                reset = True
+            lo, hi = 0, len(self.events)
+            while lo < hi:
+                mid = (lo + hi) // 2
+                if self.events[mid][0] < offset:
+                    lo = mid + 1
+                else:
+                    hi = mid
+            out = [dict(self.full.get(line, event)) for line, event in self.events[lo:]]
+            return out, self.lines, reset
+
+    def update_event(self, run, update):
+        """The full update event, draws included, read back from disk."""
+        self.refresh()
+        with self.lock:
+            lines = list(reversed(self.update_lines))
+            compact = {line: event for line, event in self.events if line in self.where}
+        for line in lines:
+            event = compact.get(line) or {}
+            if str(event.get("update")) != str(update):
+                continue
+            if run and event.get("run") != run and _alias(self.path.parent, event.get("run")) != run:
+                continue
+            if line in self.full:
+                return dict(self.full[line])
+            with open(self.path, "rb") as handle:
+                handle.seek(self.where[line])
+                return json.loads(handle.readline().decode("utf-8"))
+        return None
+
+
+def _alias(directory, run):
+    try:
+        return load_run_aliases(directory).get(run, run)
+    except (OSError, ValueError, json.JSONDecodeError):
+        return run
+
+
+def event_log(directory):
+    path = (Path(directory) / EVENTS_NAME).resolve()
+    with _LOGS_LOCK:
+        log = _LOGS.get(str(path))
+        if log is None:
+            log = _LOGS[str(path)] = EventLog(path)
+    return log
 
 
 def note_text(value, limit):
@@ -124,57 +268,40 @@ def _mix_summary(session):
 
 
 def scan_series(directory):
-    """Session rows and counts. The file is read again only when it changes."""
-    path = Path(directory) / EVENTS_NAME
-    stat = path.stat()
-    key = (str(path), stat.st_mtime_ns, stat.st_size)
-    cached = _INDEX_CACHE.get(key[0])
-    if cached and cached[0] == key:
-        return cached[1]
-    aliases = {}
+    """Session rows and counts, from the followed log."""
+    log = event_log(directory)
+    log.refresh()
     try:
         aliases = load_run_aliases(directory)
     except (OSError, ValueError, json.JSONDecodeError):
         aliases = {}
+    with log.lock:
+        raw_sessions = [dict(event) for event in log.sessions]
+        raw_updates = dict(log.updates)
+        raw_reviews = dict(log.reviews)
     sessions = []
-    seen = {}
-    updates = 0
-    reviews = 0
+    seen = set()
+    for session in raw_sessions:
+        session["run"] = aliases.get(session.get("run"), session.get("run"))
+        run = session.get("run") or ""
+        if run not in seen:
+            seen.add(run)
+            sessions.append(session)
     per_updates = {}
     per_reviews = {}
-    text = path.read_text(encoding="utf-8")
-    for line in text.splitlines():
-        type_match = _EVENT_TYPE.search(line)
-        if not type_match:
-            continue
-        kind = type_match.group(1)
-        run_match = _EVENT_RUN.search(line)
-        run = aliases.get(run_match.group(1), run_match.group(1)) if run_match else ""
-        if kind == "session":
-            try:
-                session = json.loads(line)
-            except json.JSONDecodeError:
-                continue
-            session["run"] = aliases.get(session.get("run"), session.get("run"))
-            run = session.get("run") or ""
-            if run not in seen:
-                seen[run] = session
-                sessions.append(session)
-        elif kind == "update":
-            updates += 1
-            per_updates[run] = per_updates.get(run, 0) + 1
-        elif kind == "review":
-            reviews += 1
-            per_reviews[run] = per_reviews.get(run, 0) + 1
-    scanned = {
+    for run, count in raw_updates.items():
+        run = aliases.get(run, run)
+        per_updates[run] = per_updates.get(run, 0) + count
+    for run, count in raw_reviews.items():
+        run = aliases.get(run, run)
+        per_reviews[run] = per_reviews.get(run, 0) + count
+    return {
         "sessions": sessions,
-        "updates": updates,
-        "reviews": reviews,
+        "updates": sum(raw_updates.values()),
+        "reviews": sum(raw_reviews.values()),
         "per_updates": per_updates,
         "per_reviews": per_reviews,
     }
-    _INDEX_CACHE[key[0]] = (key, scanned)
-    return scanned
 
 
 def series_record(directory):
@@ -337,7 +464,7 @@ class Handler(BaseHTTPRequestHandler):
                 payload = {"offset": 0, "reset": False, "events": [], "series": None}
                 self._send(200, "application/json", json.dumps(payload).encode("utf-8"))
                 return
-            events, next_offset, reset = read_events(directory / EVENTS_NAME, max(offset, 0))
+            events, next_offset, reset = event_log(directory).since(max(offset, 0))
             try:
                 apply_run_aliases(events, load_run_aliases(directory))
             except (OSError, ValueError):
@@ -349,6 +476,24 @@ class Handler(BaseHTTPRequestHandler):
                 "events": events,
             }).encode("utf-8")
             self._send(200, "application/json", payload)
+            return
+        if parsed.path == "/api/update":
+            query = parse_qs(parsed.query)
+            directory = self.series_directory(query.get("series", [""])[0]) \
+                if query.get("series") else self.default_directory()
+            if directory is None:
+                self._send(404, "text/plain; charset=utf-8", b"unknown run")
+                return
+            event = event_log(directory).update_event(query.get("run", [""])[0],
+                                                      query.get("update", [""])[0])
+            if event is None:
+                self._send(404, "text/plain; charset=utf-8", b"no such update")
+                return
+            try:
+                apply_run_aliases([event], load_run_aliases(directory))
+            except (OSError, ValueError):
+                pass
+            self._send(200, "application/json", json.dumps(event).encode("utf-8"))
             return
         if parsed.path.startswith("/sheets/"):
             path = self._sheet(unquote(parsed.path[len("/sheets/"):]))
@@ -381,13 +526,29 @@ class Handler(BaseHTTPRequestHandler):
             return None
         return self._sheet_file(self.directory, name)
 
+    def handle(self):
+        try:
+            super().handle()
+        except (ConnectionError, TimeoutError):
+            pass
+
     def _send(self, code, content_type, body):
+        gzipped = False
+        if (len(body) > 1024 and not content_type.startswith("image/")
+                and "gzip" in self.headers.get("Accept-Encoding", "")):
+            body = gzip.compress(body, compresslevel=5)
+            gzipped = True
         self.send_response(code)
         self.send_header("Content-Type", content_type)
+        if gzipped:
+            self.send_header("Content-Encoding", "gzip")
         self.send_header("Content-Length", str(len(body)))
         self.send_header("Cache-Control", "no-store")
         self.end_headers()
-        self.wfile.write(body)
+        try:
+            self.wfile.write(body)
+        except (ConnectionError, TimeoutError):
+            pass
 
     def log_message(self, fmt, *args):
         return
@@ -416,7 +577,16 @@ def make_server(directory, port, root=None):
 
     Bound.directory = directory
     Bound.root = root
-    return ThreadingHTTPServer(("127.0.0.1", port), Bound)
+    return QuietServer(("127.0.0.1", port), Bound)
+
+
+class QuietServer(ThreadingHTTPServer):
+    daemon_threads = True
+
+    def handle_error(self, request, client_address):
+        if isinstance(sys.exc_info()[1], (ConnectionError, TimeoutError)):
+            return
+        super().handle_error(request, client_address)
 
 
 def import_log(log_path, directory, run, replace):
@@ -464,8 +634,12 @@ def main():
     url = f"http://127.0.0.1:{server.server_address[1]}/"
     print(f"RL dashboard  {url}", flush=True)
     print(f"reading       {reading}", flush=True)
-    if args.open and sys.platform == "darwin":
-        subprocess.run(["open", url], check=False)
+    if args.open:
+        if sys.platform == "darwin":
+            subprocess.run(["open", url], check=False)
+        else:
+            import webbrowser
+            webbrowser.open(url)
     try:
         server.serve_forever()
     except KeyboardInterrupt:

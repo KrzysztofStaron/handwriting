@@ -674,6 +674,33 @@ function isNovelText(text) {
   return words.every(scrambledWord);
 }
 
+const fullUpdates = new Map();
+const fullPending = new Set();
+
+function withDraws(row) {
+  if (!row || !row.draws_omitted || row.draws) return row;
+  const key = (row.run || "") + "/" + row.update;
+  if (fullUpdates.has(key)) return fullUpdates.get(key);
+  if (!fullPending.has(key)) {
+    fullPending.add(key);
+    const query = "update=" + encodeURIComponent(row.update)
+      + "&run=" + encodeURIComponent(row.run || "")
+      + (state.series ? "&series=" + encodeURIComponent(state.series) : "");
+    fetch("/api/update?" + query, { cache: "no-store" })
+      .then((response) => response.ok ? response.json() : null)
+      .then((full) => {
+        if (full) {
+          fullUpdates.set(key, full);
+          state.token = "";
+          render();
+        }
+      })
+      .catch(() => {})
+      .finally(() => fullPending.delete(key));
+  }
+  return row;
+}
+
 function rowText(row) {
   if (row.example && row.example.text) return row.example.text;
   let best = "";
@@ -1025,7 +1052,7 @@ function render() {
   }
 
   const samples = rows.filter((row) => row.type === "update" && row.sheet);
-  const chosen = samples.find((row) => String(row.update) === String(state.gen)) || samples[samples.length - 1] || null;
+  const chosen = withDraws(samples.find((row) => String(row.update) === String(state.gen)) || samples[samples.length - 1] || null);
   const genPick = document.getElementById("gen-pick");
   genPick.innerHTML = samples.slice().reverse().map((row) => {
     const width = row.beam || session.beam;
@@ -1125,6 +1152,7 @@ function render() {
         <td>${num(row.steps_mean, 0)}</td>
       </tr>`;
     if (!open) return head;
+    row = withDraws(row);
     const prefix = prefixAt(prefixGroups(row.draws), state.words);
     const shownDraws = prefix ? prefix.draws : [];
     const ownPictures = shownDraws.some((draw) => draw.image);
