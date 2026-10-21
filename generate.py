@@ -1,4 +1,5 @@
 import argparse
+VERBOSE = True  # train_rl --quiet turns this off
 import json
 import math
 import torch
@@ -368,7 +369,7 @@ def sample_batch(model, texts, stoi, device, temperature=1.0, max_steps=None,
             active = active & ~done & ((t + 1) < budget)
             x = step.view(count, 1, 3)
             if count > 1 and t > 0 and t % 200 == 0:
-                print(f"      step {t}  finished {int((~active).sum())}/{count}", flush=True)
+                if VERBOSE: print(f"      step {t}  finished {int((~active).sum())}/{count}", flush=True)
 
     sequences = []
     for text, pts in zip(texts, points):

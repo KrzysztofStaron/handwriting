@@ -83,6 +83,15 @@ DEFAULT_REVIEW = "the old man"
 _CKPT_NAME = re.compile(r"^ckpt-(\d+)\.pth$")
 
 
+QUIET = False
+
+
+def vprint(*a, **k):
+    """Per-draw detail; silenced by --quiet."""
+    if not QUIET:
+        print(*a, **k)
+
+
 def parse_args(argv=None):
     parser = argparse.ArgumentParser(
         description="REINFORCE the handwriting model against a TrOCR-Large reward. "
@@ -126,8 +135,8 @@ def parse_args(argv=None):
                         help="Word list for --words. One word per line. "
                              "Capitals, digits, and punctuation are dropped.")
     parser.add_argument("--reward", choices=("both", "vcer", "cer", "exp", "linear", "soft"), default="both",
-                        help="both: 60% plain CER and 20% visual CER (default), then "
-                             "20% confidence. Straightness is subtracted. "
+                        help="both: 60%% plain CER and 20%% visual CER (default), then "
+                             "20%% confidence. Straightness is subtracted. "
                              "vcer: visual distance only. cer: plain CER only. "
                              "exp: exp(-CER). linear: 1-CER. "
                              "soft: 1 at or below --tau, then linear to 0 at CER=1.")
@@ -185,6 +194,8 @@ def parse_args(argv=None):
                         help="Save a sheet of the training prompts every this many updates. "
                              "0 saves none. The fixed review sentence is still drawn at each checkpoint.")
     parser.add_argument("--sheet-dir", default="samples/rl")
+    parser.add_argument("--quiet", action="store_true",
+                        help="Console shows only the one-line update summary (and checkpoints).")
     parser.add_argument("--no-open", action="store_true",
                         help="Save each review sheet without opening it.")
     return parser.parse_args(argv)
@@ -476,7 +487,7 @@ def beam_stages(model, ref, scorer, optimizer, prompts, stoi, std, device, args,
     )
     budgets = segment_budgets(text, len(branches))
     label = "x".join(str(branch) for branch in branches)
-    print(f"    {text!r}  {n_words} words  {source}  {label}  steps {budgets}",
+    vprint(f"    {text!r}  {n_words} words  {source}  {label}  steps {budgets}",
           flush=True)
     update_no = None
     if counter is not None:
@@ -494,7 +505,7 @@ def beam_stages(model, ref, scorer, optimizer, prompts, stoi, std, device, args,
             # One temperature per root. A hotter sibling would score worse
             # with TrOCR, and the chunk advantage would credit that gap.
             temperatures = [float(parent["temperature"]) for parent in parents]
-        print(f"    {text!r}  {count} draws", flush=True)
+        vprint(f"    {text!r}  {count} draws", flush=True)
         sequences, new_states = sample_batch(
             model, [text] * count, stoi, device,
             temperature=temperatures, window_sharpen=args.sharpen,
@@ -527,7 +538,7 @@ def beam_stages(model, ref, scorer, optimizer, prompts, stoi, std, device, args,
             if parent is not None:
                 parent["children"].append(node)
             grown.append(node)
-            print(f"      draw {index + 1}/{count}  temp {temperatures[index]:.2f}"
+            vprint(f"      draw {index + 1}/{count}  temp {temperatures[index]:.2f}"
                   f"  +{seq.shape[0]}  ({full.shape[0]} steps)", flush=True)
         if log is not None:
             for index, node in enumerate(grown):
@@ -722,12 +733,12 @@ def beam_stages(model, ref, scorer, optimizer, prompts, stoi, std, device, args,
 
 def write_review(model, scorer, text, stoi, std, device, args, index, out_dir):
     """Draw the fixed sentence `review_k` times from the weights just saved."""
-    print(f"  review {text!r} x {args.review_k}", flush=True)
+    vprint(f"  review {text!r} x {args.review_k}", flush=True)
     temperatures = draw_temperatures(args.review_k, args.temp_min, args.temp_max, args.temp_center)
     sequences = rollout_batch(
         model, [text] * args.review_k, stoi, device, temperatures, args.sharpen)
     for draw, (seq, temp) in enumerate(zip(sequences, temperatures), start=1):
-        print(f"    draw {draw}/{args.review_k}  temp {temp:.2f}  ({seq.shape[0]} steps)", flush=True)
+        vprint(f"    draw {draw}/{args.review_k}  temp {temp:.2f}  ({seq.shape[0]} steps)", flush=True)
     images = strokes_to_images(sequences, std)
     rewards, cers, hyps = scorer.score(images, [text] * len(images))
     bends = [line_straightness(seq, std) for seq in sequences]
@@ -743,7 +754,7 @@ def write_review(model, scorer, text, stoi, std, device, args, index, out_dir):
         extra = "" if wcer is None else f"  wcer {wcer:.3f}"
         conf = confs[i - 1] if i - 1 < len(confs) else None
         conf_bit = "" if conf is None else f"  conf {conf:.2f}"
-        print(f"    {i:2d}  cer {cer:.2f}{extra}{conf_bit}  reward {reward:.3f}  -> {short(hyp)!r}",
+        vprint(f"    {i:2d}  cer {cer:.2f}{extra}{conf_bit}  reward {reward:.3f}  -> {short(hyp)!r}",
               flush=True)
     mean_c = sum(cers) / len(cers)
     mean_r = sum(rewards) / len(rewards)
@@ -792,6 +803,11 @@ def write_review(model, scorer, text, stoi, std, device, args, index, out_dir):
 
 def main():
     args = parse_args()
+    global QUIET
+    QUIET = args.quiet
+    if QUIET:
+        import generate
+        generate.VERBOSE = False
     if args.temp_min < 0 or args.temp_max < 0:
         raise SystemExit("--temp-min and --temp-max must be >= 0")
     if args.temp_max < args.temp_min:
@@ -1018,7 +1034,7 @@ def main():
                         updates = counter[0]
                         block_updates += 1
                         if sheet_name:
-                            print(f"  samples {sheet_name}", flush=True)
+                            vprint(f"  samples {sheet_name}", flush=True)
                         elapsed = (time.monotonic() - started) / 60.0
                         reward_mean = sum(rewards) / len(rewards)
                         cer_mean = sum(cers) / len(cers)
