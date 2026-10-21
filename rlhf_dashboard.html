@@ -1,0 +1,96 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>RLHF</title>
+<style>
+body{font:15px system-ui,sans-serif;margin:0;background:#f6f6f4;color:#222}
+header{display:flex;justify-content:space-between;align-items:center;padding:12px 20px;background:#fff;border-bottom:1px solid #ddd}
+h1{font-size:18px;margin:0}
+main{padding:16px 20px;max-width:1600px;margin:auto}
+.bar{display:flex;gap:10px;align-items:center;flex-wrap:wrap;margin-bottom:12px}
+input[type=text]{font:inherit;padding:5px 8px;width:360px}
+button,select{font:inherit;padding:5px 12px;border:1px solid #bbb;border-radius:6px;background:#fff;cursor:pointer}
+button:disabled{opacity:.4;cursor:default}
+.prompt{font-size:20px;margin:6px 0 12px}
+.grid{display:grid;grid-template-columns:1fr 1fr;gap:14px}
+.card{background:#fff;border:3px solid #ddd;border-radius:8px;padding:8px;cursor:pointer}
+.card img{width:100%;display:block}
+.card.best{border-color:#1e9e4a}
+.card.worst{border-color:#d33}
+.card .lab{font-weight:700}
+.muted{color:#777}
+table{border-collapse:collapse;background:#fff;font-size:13px}
+td,th{border:1px solid #ddd;padding:4px 8px;text-align:left}
+#err{color:#c00}
+</style>
+</head>
+<body>
+<header><h1>RLHF</h1><div><a href="/">Back to dashboard</a></div></header>
+<main>
+<div class="bar" id="stats"></div>
+<div class="bar">
+  <select id="source"><option value="auto">random mix</option><option value="words">dictionary</option><option value="romeo">Romeo and Juliet</option><option value="fixed">fixed prompts</option></select>
+  <input id="custom" type="text" placeholder="custom prompt (optional)">
+  <button onclick="gen()">New round</button>
+  <button onclick="saveCkpt()">Save checkpoint</button>
+  <span id="err"></span>
+</div>
+<div id="round" class="muted">Press "New round" to start.</div>
+<h3>History</h3>
+<table id="hist"></table>
+</main>
+<script>
+let R=null,best=null,worst=null,busy=false;
+const esc=s=>String(s).replace(/[&<>"]/g,c=>({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;"}[c]));
+const f=(x,d=4)=>x==null||!isFinite(x)?"-":Number(x).toFixed(d);
+async function api(path,body){
+  const res=await fetch("/api/rlhf/"+path,body===undefined?{}:{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify(body)});
+  const data=await res.json().catch(()=>({error:"server not reachable"}));
+  if(!res.ok||data.error)throw new Error(data.error||res.status);
+  return data;
+}
+function showStatus(s){
+  const m=s.meta||{};
+  document.getElementById("stats").innerHTML=`<b>Round ${s.rounds}</b><span>steps ${s.steps}${s.accumulate>1?` (${s.pending}/${s.accumulate} pending)`:""}</span><span>recent KL ${f(s.recent_kl)}</span><span class="muted">start: ${esc(m.source_checkpoint||"?")} (update ${m.source_update})  device ${s.device}  lr ${s.lr}  kl ${s.kl_coef}  temps ${s.temps.mode==="fixed"?s.temps.fixed:s.temps.min+"-"+s.temps.max}  ckpts ${s.ckpt_index}</span>`;
+  document.getElementById("hist").innerHTML="<tr><th>round</th><th>prompt</th><th>best</th><th>worst</th><th>loss</th><th>kl</th><th>grad</th><th>step</th></tr>"+s.history.slice().reverse().map(h=>`<tr><td>${h.round}</td><td>${esc(h.prompt)}</td><td>${h.best+1}</td><td>${h.worst==null?"-":h.worst+1}</td><td>${f(h.loss)}</td><td>${f(h.kl)}</td><td>${f(h.grad,3)}</td><td>${h.stepped?h.step:"-"}</td></tr>`).join("");
+}
+async function refresh(){try{showStatus(await api("status"))}catch(e){err(e)}}
+function err(e){document.getElementById("err").textContent=e?String(e.message||e):""}
+async function gen(){
+  if(busy)return;busy=true;err();
+  document.getElementById("round").innerHTML='<span class="muted">Drawing 4 samples...</span>';
+  try{
+    R=await api("generate",{source:document.getElementById("source").value,text:document.getElementById("custom").value});
+    best=null;worst=null;draw();
+  }catch(e){err(e);document.getElementById("round").textContent=""}finally{busy=false}
+}
+function draw(){
+  if(!R)return;
+  document.getElementById("round").innerHTML=`<div class="prompt">Prompt: <b>${esc(R.text)}</b> <span class="muted">(${R.source}, ${R.gen_s}s)</span></div>
+  <div class="grid">${R.images.map((src,i)=>`<div class="card ${best===i?"best":""} ${worst===i?"worst":""}" onclick="choose(${i},event.shiftKey)"><div><span class="lab">${i+1}</span> <span class="muted">temp ${R.temps[i].toFixed(2)}</span> ${best===i?"<b style='color:#1e9e4a'>BEST</b>":""}${worst===i?"<b style='color:#d33'>WORST</b>":""}</div><img src="${src}"></div>`).join("")}</div>
+  <div class="bar" style="margin-top:10px"><button onclick="submit()" ${best===null?"disabled":""}>Submit (Enter)</button><button onclick="skip()">Skip (S)</button><span class="muted">Click or 1-4 = best, shift+click or shift+1-4 = worst (optional)</span></div>`;
+}
+function choose(i,isWorst){
+  if(isWorst){worst=worst===i?null:i;if(best===i)best=null}
+  else{best=i;if(worst===i)worst=null}
+  draw();
+}
+async function submit(){
+  if(!R||best===null||busy)return;busy=true;err();
+  try{const out=await api("submit",{token:R.token,best,worst});showStatus(out.status);R=null;busy=false;gen()}
+  catch(e){err(e)}finally{busy=false}
+}
+async function skip(){if(busy)return;try{showStatus(await api("skip",{}));R=null;gen()}catch(e){err(e)}}
+async function saveCkpt(){try{const out=await api("save",{});showStatus(out.status);err();alert("saved "+out.saved)}catch(e){err(e)}}
+document.addEventListener("keydown",e=>{
+  if(e.target.tagName==="INPUT"){if(e.key==="Enter")gen();return}
+  const codes={Digit1:0,Digit2:1,Digit3:2,Digit4:3};
+  if(R&&e.code in codes){choose(codes[e.code],e.shiftKey);e.preventDefault()}
+  else if(e.key==="Enter"){R?submit():gen()}
+  else if(e.key==="s"||e.key==="S")skip();
+});
+refresh();
+</script>
+</body>
+</html>

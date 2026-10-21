@@ -22,6 +22,10 @@ from pathlib import Path
 from urllib.parse import parse_qs, unquote, urlparse
 
 import rl_blind
+import urllib.error
+import urllib.request
+
+RLHF_URL = "http://127.0.0.1:8766"
 from rl_events import (
     EVENTS_NAME, apply_run_aliases, load_run_aliases, parse_stdout_log, write_events,
 )
@@ -377,8 +381,25 @@ class Handler(BaseHTTPRequestHandler):
             return None
         return found[0]
 
+    def _proxy_rlhf(self, method, body=None):
+        req = urllib.request.Request(RLHF_URL + self.path, data=body, method=method,
+                                     headers={"Content-Type": "application/json"})
+        try:
+            with urllib.request.urlopen(req, timeout=300) as res:
+                self._send(res.status, res.headers.get("Content-Type", "application/json"),
+                           res.read())
+        except urllib.error.HTTPError as exc:
+            self._send(exc.code, exc.headers.get("Content-Type", "application/json"), exc.read())
+        except (urllib.error.URLError, OSError):
+            msg = b'{"error": "rlhf server is not running: uv run --no-sync rl_hf.py"}'
+            self._send(502, "application/json", msg)
+
     def do_POST(self):
         parsed = urlparse(self.path)
+        if parsed.path.startswith("/api/rlhf/"):
+            length = int(self.headers.get("Content-Length", "0") or 0)
+            self._proxy_rlhf("POST", self.rfile.read(length) if length else b"{}")
+            return
         if parsed.path in {"/api/blind/pick", "/api/blind/undo"}:
             try:
                 length = int(self.headers.get("Content-Length", "0"))
@@ -437,6 +458,9 @@ class Handler(BaseHTTPRequestHandler):
                 self._send(500, "text/plain; charset=utf-8", b"rl_dashboard.html is missing")
                 return
             self._send(200, "text/html; charset=utf-8", PAGE.read_bytes())
+            return
+        if parsed.path == "/rlhf" or parsed.path.startswith("/api/rlhf/"):
+            self._proxy_rlhf("GET")
             return
         if parsed.path == "/blind":
             if not rl_blind.PAGE.is_file():
