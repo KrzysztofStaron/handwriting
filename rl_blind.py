@@ -16,7 +16,7 @@ BLIND_DIR = Path(__file__).resolve().parent / "samples" / "blind"
 PAGE = Path(__file__).with_name("blind_dashboard.html")
 LABELS = ("A", "B", "C", "D")
 MATCHES = 4
-_IMG = re.compile(r"^r\d{2}-[A-D]\.png$")
+_IMG = re.compile(r"^r\d{2}-[A-D](-2)?\.png$")
 _LOCK = threading.Lock()
 
 
@@ -108,9 +108,15 @@ def _current(rounds, picks, bracket):
             stage = ["semifinal 1", "semifinal 2", "final", "3rd place"][len(done)]
             return {"round": r["round"], "prompt": r["prompt"], "match": len(done) + 1,
                     "stage": stage, "left": left, "right": right,
-                    "images": {"left": f"/blind/img/r{r['round']:02d}-{left}.png",
-                               "right": f"/blind/img/r{r['round']:02d}-{right}.png"}}
+                    "images": {"left": _img(r["round"], left, len(done)),
+                               "right": _img(r["round"], right, len(done))}}
     return None
+
+
+def _img(n, label, done):
+    """Semifinals show sheet 1; the final and 3rd-place match show fresh sheet 2."""
+    suffix = "-2" if done >= 2 and (BLIND_DIR / f"r{n:02d}-{label}-2.png").is_file() else ""
+    return f"/blind/img/r{n:02d}-{label}{suffix}.png"
 
 
 def leaderboard(key, results, picks):
@@ -122,7 +128,8 @@ def leaderboard(key, results, picks):
                        "labels": r["labels"], "places": places})
         for label, model in r["labels"].items():
             s = stats.setdefault(model, {"places": [], "firsts": 0, "borda": 0,
-                                         "wins": 0, "games": 0})
+                                         "wins": 0, "games": 0,
+                                         "terrible_ties": 0, "awesome_ties": 0})
             place = places[label]
             s["places"].append(place)
             s["firsts"] += place == 1
@@ -130,16 +137,22 @@ def leaderboard(key, results, picks):
     h2h = {}
     for p in picks:
         w, l = labels[p["round"]][p["winner"]], labels[p["round"]][p["loser"]]
-        stats[w]["wins"] += 1
-        stats[w]["games"] += 1
-        stats[l]["games"] += 1
+        tie = p.get("tie")
         for a, b, won in ((w, l, 1), (l, w, 0)):
-            cell = h2h.setdefault(a, {}).setdefault(b, {"wins": 0, "games": 0})
-            cell["wins"] += won
-            cell["games"] += 1
+            cell = h2h.setdefault(a, {}).setdefault(
+                b, {"wins": 0, "games": 0, "terrible_ties": 0, "awesome_ties": 0})
+            if tie:
+                cell[tie + "_ties"] += 1
+                stats[a][tie + "_ties"] += 1
+            else:
+                cell["wins"] += won
+                cell["games"] += 1
+                stats[a]["wins"] += won
+                stats[a]["games"] += 1
     board = [{"model": m, "avg_place": sum(s["places"]) / len(s["places"]),
               "firsts": s["firsts"], "borda": s["borda"], "wins": s["wins"],
-              "games": s["games"], "win_rate": s["wins"] / s["games"] if s["games"] else 0}
+              "games": s["games"], "win_rate": s["wins"] / s["games"] if s["games"] else None,
+              "terrible_ties": s["terrible_ties"], "awesome_ties": s["awesome_ties"]}
              for m, s in stats.items()]
     board.sort(key=lambda s: (-s["borda"], s["avg_place"]))
     return {"leaderboard": board, "head_to_head": h2h, "rounds": reveal}
@@ -178,13 +191,18 @@ def post(action, body):
             if body.get("round") != current["round"] or body.get("match") != current["match"]:
                 raise ValueError("stale match, reload the page")
             side = body.get("winner")
+            tie = None
+            if side in ("tie_terrible", "tie_awesome"):
+                # A tie still has to advance someone, so pick at random.
+                tie = side.split("_", 1)[1]
+                side = random.SystemRandom().choice(["left", "right"])
             if side not in ("left", "right"):
-                raise ValueError("winner must be left or right")
+                raise ValueError("winner must be left, right, tie_terrible or tie_awesome")
             winner = current[side]
             loser = current["right" if side == "left" else "left"]
             picks.append({"round": current["round"], "match": current["match"],
                           "left": current["left"], "right": current["right"],
-                          "winner": winner, "loser": loser})
+                          "winner": winner, "loser": loser, "tie": tie})
         elif action == "undo":
             if picks:
                 last = picks.pop()

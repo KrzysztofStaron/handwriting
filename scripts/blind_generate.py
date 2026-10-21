@@ -22,10 +22,10 @@ from generate import load_model, load_std  # noqa: E402
 from rl import consistency_sheet, rollout_batch, strokes_to_images  # noqa: E402
 
 MODELS = {
-    "best-4": "models/best-4.pth",
-    "delusion": "models/named/delusion.pth",
     "consistency1": "models/named/consistency1.pth",
     "consistency1 extended": "models/named/consistency1-extended.pth",
+    "extended": "models/named/extended.pth",
+    "consistency1 extended smoothed": "models/named/consistency1-extended-smoothed.pth",
 }
 
 PROMPTS = [
@@ -60,6 +60,7 @@ def main():
     ap.add_argument("--sharpen", type=float, default=2.0)
     ap.add_argument("--device", default="cpu")
     ap.add_argument("--threads", type=int, default=4)
+    ap.add_argument("--sheets", type=int, default=2, help="independent sheets per model")
     ap.add_argument("--fresh", action="store_true")
     ap.add_argument("--check", action="store_true", help="only validate prompts")
     args = ap.parse_args()
@@ -103,17 +104,21 @@ def main():
         model, _ = load_model(args.device, ckpt=str(ROOT / ckpt))
         for r in key["rounds"]:
             label = next(k for k, v in r["labels"].items() if v == name)
-            path = out / f"r{r['round']:02d}-{label}.png"
-            if path.exists():
-                continue
             text = r["prompt"]
-            with torch.no_grad():
-                seqs = rollout_batch(model, [text] * args.tries, stoi, args.device,
-                                     [args.temperature] * args.tries, args.sharpen)
-            images = strokes_to_images(seqs, std)
-            caps = [f"try {i}" for i in range(1, len(images) + 1)]
-            consistency_sheet(images, f"{label}   {text}", caps).save(path)
-            print(f"{time.time() - t0:7.1f}s  round {r['round']:2d} {label}", flush=True)
+            # Sheet 1 is for the semifinal, sheet 2 (fresh draws) for the final/3rd place.
+            for sheet in range(1, args.sheets + 1):
+                suffix = "" if sheet == 1 else f"-{sheet}"
+                path = out / f"r{r['round']:02d}-{label}{suffix}.png"
+                if path.exists():
+                    continue
+                with torch.no_grad():
+                    seqs = rollout_batch(model, [text] * args.tries, stoi, args.device,
+                                         [args.temperature] * args.tries, args.sharpen)
+                images = strokes_to_images(seqs, std)
+                caps = [f"try {i}" for i in range(1, len(images) + 1)]
+                consistency_sheet(images, text, caps).save(path)
+                print(f"{time.time() - t0:7.1f}s  round {r['round']:2d} {label} sheet {sheet}",
+                      flush=True)
         del model
     print(f"done in {time.time() - t0:.1f}s")
 

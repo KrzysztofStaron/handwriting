@@ -52,21 +52,24 @@ function render(){
   <div class="grid">
     <div class="card" onclick="pick('left')"><img src="${c.images.left}"><div class="hint">Left is better (&larr; or 1)</div></div>
     <div class="card" onclick="pick('right')"><img src="${c.images.right}"><div class="hint">Right is better (&rarr; or 2)</div></div>
-  </div>`;
+  </div>
+  <div class="nav" style="justify-content:center"><button onclick="pick('tie_terrible')">Both are terrible (T)</button><button onclick="pick('tie_awesome')">Both are awesome (A)</button></div>`;
 }
 document.addEventListener("keydown",e=>{
   if(!S||S.done&&e.key!=="u")return;
   if(e.key==="ArrowLeft"||e.key==="1")pick("left");
   else if(e.key==="ArrowRight"||e.key==="2")pick("right");
+  else if(e.key==="t"||e.key==="T")pick("tie_terrible");
+  else if(e.key==="a"||e.key==="A")pick("tie_awesome");
   else if(e.key==="u"||e.key==="U"||(e.key==="z"&&(e.metaKey||e.ctrlKey)))undo();
 });
 function pct(x){return (100*x).toFixed(0)+"%"}
 function showReveal(){
   const v=S.reveal, models=v.leaderboard.map(m=>m.model);
-  const board=v.leaderboard.map((m,i)=>`<tr><td>${i+1}</td><td><b>${esc(m.model)}</b></td><td>${m.avg_place.toFixed(2)}</td><td>${m.firsts}</td><td>${m.borda}</td><td>${pct(m.win_rate)} <span class="muted">(${m.wins}/${m.games})</span></td></tr>`).join("");
-  const h2h=`<tr><th>row beat column</th>${models.map(m=>`<th>${esc(m)}</th>`).join("")}</tr>`+models.map(a=>`<tr><th>${esc(a)}</th>${models.map(b=>{const c=(v.head_to_head[a]||{})[b];return a===b?"<td class=muted>-</td>":c?`<td>${pct(c.wins/c.games)} <span class="muted">(${c.wins}/${c.games})</span></td>`:"<td class=muted>no games</td>"}).join("")}</tr>`).join("");
+  const board=v.leaderboard.map((m,i)=>`<tr><td>${i+1}</td><td><b>${esc(m.model)}</b></td><td>${m.avg_place.toFixed(2)}</td><td>${m.firsts}</td><td>${m.borda}</td><td>${m.win_rate==null?"-":pct(m.win_rate)} <span class="muted">(${m.wins}/${m.games})</span></td><td>${m.terrible_ties}</td><td>${m.awesome_ties}</td></tr>`).join("");
+  const h2h=`<tr><th>row beat column</th>${models.map(m=>`<th>${esc(m)}</th>`).join("")}</tr>`+models.map(a=>`<tr><th>${esc(a)}</th>${models.map(b=>{const c=(v.head_to_head[a]||{})[b];if(a===b)return "<td class=muted>-</td>";if(!c)return "<td class=muted>no games</td>";const t=c.terrible_ties||c.awesome_ties?` <span class="muted">ties T${c.terrible_ties}/A${c.awesome_ties}</span>`:"";return `<td>${c.games?pct(c.wins/c.games):"-"} <span class="muted">(${c.wins}/${c.games})</span>${t}</td>`}).join("")}</tr>`).join("");
   const rounds=v.rounds.map(r=>`<tr><td>${r.round}</td><td>${esc(r.prompt)}</td>${[1,2,3,4].map(p=>{const l=L.find(l=>r.places[l]===p);return `<td>${esc(r.labels[l])}</td>`}).join("")}</tr>`).join("");
-  app.innerHTML=`<h2>Leaderboard</h2><table><tr><th>#</th><th>Model</th><th>Avg place</th><th>1st places</th><th>Borda (3/2/1/0)</th><th>Match win rate</th></tr>${board}</table>
+  app.innerHTML=`<h2>Leaderboard</h2><table><tr><th>#</th><th>Model</th><th>Avg place</th><th>1st places</th><th>Borda (3/2/1/0)</th><th>Match win rate (ties excluded)</th><th>Both terrible</th><th>Both awesome</th></tr>${board}</table>
   <p><button onclick="undo()">Undo last pick</button></p>
   <h2>Head to head</h2><table>${h2h}</table>
   <h2>Per prompt</h2><table><tr><th>#</th><th>Prompt</th><th>1st</th><th>2nd</th><th>3rd</th><th>4th</th></tr>${rounds}</table>`;
