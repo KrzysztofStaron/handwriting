@@ -136,7 +136,7 @@ def health():
     return jsonify({
         "status": "ok",
         "backend": "numpy",
-        "model": "best-4",
+        "model": "extended-hf",
         "vocab_size": len(stoi),
     })
 
