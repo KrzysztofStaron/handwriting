@@ -21,6 +21,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import parse_qs, unquote, urlparse
 
+import rl_blind
 from rl_events import (
     EVENTS_NAME, apply_run_aliases, load_run_aliases, parse_stdout_log, write_events,
 )
@@ -378,6 +379,20 @@ class Handler(BaseHTTPRequestHandler):
 
     def do_POST(self):
         parsed = urlparse(self.path)
+        if parsed.path == "/api/blind/rank":
+            try:
+                length = int(self.headers.get("Content-Length", "0"))
+                if length < 0 or length > 4096:
+                    raise ValueError("bad length")
+                body = json.loads(self.rfile.read(length).decode("utf-8"))
+                if not isinstance(body, dict):
+                    raise ValueError("body must be an object")
+                out = rl_blind.rank(body)
+            except (UnicodeDecodeError, json.JSONDecodeError, ValueError) as exc:
+                self._send(400, "text/plain; charset=utf-8", str(exc).encode("utf-8"))
+                return
+            self._send(200, "application/json", json.dumps(out).encode("utf-8"))
+            return
         if parsed.path != "/api/notes":
             self._send(404, "text/plain; charset=utf-8", b"not found")
             return
@@ -422,6 +437,22 @@ class Handler(BaseHTTPRequestHandler):
                 self._send(500, "text/plain; charset=utf-8", b"rl_dashboard.html is missing")
                 return
             self._send(200, "text/html; charset=utf-8", PAGE.read_bytes())
+            return
+        if parsed.path == "/blind":
+            if not rl_blind.PAGE.is_file():
+                self._send(500, "text/plain; charset=utf-8", b"blind_dashboard.html is missing")
+                return
+            self._send(200, "text/html; charset=utf-8", rl_blind.PAGE.read_bytes())
+            return
+        if parsed.path == "/api/blind":
+            self._send(200, "application/json", json.dumps(rl_blind.state()).encode("utf-8"))
+            return
+        if parsed.path.startswith("/blind/img/"):
+            data = rl_blind.image(unquote(parsed.path[len("/blind/img/"):]))
+            if data is None:
+                self._send(404, "text/plain; charset=utf-8", b"not found")
+            else:
+                self._send(200, "image/png", data)
             return
         if parsed.path == "/vcer":
             if not VCER_PAGE.is_file():
