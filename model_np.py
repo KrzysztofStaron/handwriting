@@ -24,6 +24,7 @@ class NumpyHandwritingModel:
     def __init__(self, weights, hidden_size=400):
         self.w = weights
         self.H = hidden_size
+        self.window_sharpen = 2.0   # same default as generate.py and train_rl --sharpen
 
     @classmethod
     def from_npz(cls, path="weights.npz", hidden_size=400):
@@ -43,7 +44,8 @@ class NumpyHandwritingModel:
 
     def _window(self, h1, c, c_mask, kappa_prev):
         p = self.w["window_fc.weight"] @ h1 + self.w["window_fc.bias"]   # (3K,)
-        alpha = np.exp(p[:K]); beta = np.exp(p[K:2*K])
+        alpha = np.exp(p[:K]); beta = np.exp(p[K:2*K]) * self.window_sharpen
+        # inference-only window re-sharpening, mirrors model.compute_window / generate.py (2.0)
         kappa = kappa_prev + np.exp(p[2*K:])
         U = c.shape[0]
         u = np.arange(U)
