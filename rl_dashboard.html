@@ -60,6 +60,55 @@
     background: #f3ead7;
     border-radius: 8px;
   }
+  .line-list { display: flex; flex-direction: column; gap: 8px; }
+  .line {
+    border: 1px solid var(--line);
+    border-radius: 10px;
+    padding: 8px 10px;
+    background: #fff;
+  }
+  .line.on { border-color: var(--green); }
+  .line-head, .session-head {
+    display: flex;
+    gap: 10px;
+    align-items: baseline;
+    width: 100%;
+    background: none;
+    border: 0;
+    padding: 0;
+    text-align: left;
+    cursor: pointer;
+    font: inherit;
+    color: inherit;
+  }
+  .line-name { font-weight: 650; }
+  .line-meta, .auto {
+    color: var(--muted);
+    font-size: 13px;
+  }
+  .line-meta { margin-left: auto; font-variant-numeric: tabular-nums; white-space: nowrap; }
+  .line-form, .session-form {
+    display: grid;
+    gap: 6px;
+    margin-top: 8px;
+  }
+  .line-form input, .line-form textarea,
+  .session-form input, .session-form textarea {
+    font: inherit;
+    width: 100%;
+    border: 1px solid var(--line);
+    border-radius: 8px;
+    padding: 6px 8px;
+    background: var(--card);
+    color: var(--ink);
+  }
+  .session {
+    margin-top: 8px;
+    padding-top: 8px;
+    border-top: 1px solid var(--line);
+  }
+  .session.on .session-head .line-name { color: var(--green); }
+  .field-label { font-size: 12px; font-weight: 650; color: var(--muted); }
   .controls { display: flex; gap: 8px; align-items: center; }
   select {
     font: inherit;
@@ -204,6 +253,11 @@
   </div>
 </header>
 <main>
+  <section class="panel" id="lines">
+    <h2>Runs</h2>
+    <p class="quiet">Each directory is one line. A label names it. The note is what changed at that start.</p>
+    <div id="line-list"></div>
+  </section>
   <p id="error" class="error"></p>
   <p id="note" class="note" hidden></p>
   <div class="views" role="group" aria-label="Which lines Reward and CER show">
@@ -289,6 +343,10 @@ const state = {
   events: [],
   offset: 0,
   run: null,
+  series: null,
+  catalog: [],
+  lineKey: "",
+  linePending: false,
   block: null,
   expanded: null,
   gen: null,
@@ -779,9 +837,15 @@ function samplePrompt(label) {
   return `<p class="sample-prompt"><span>${esc(label)}</span><span class="len">${label.length}</span></p>`;
 }
 
+function sheetUrl(name) {
+  if (!name) return "";
+  const series = state.series ? encodeURIComponent(state.series) + "/" : "";
+  return "/sheets/" + series + encodeURIComponent(name);
+}
+
 function sampleImage(name) {
   if (!name) return "";
-  return `<img class="sample" alt="Handwriting for this sample" src="/sheets/${encodeURIComponent(name)}">`;
+  return `<img class="sample" alt="Handwriting for this sample" src="${sheetUrl(name)}">`;
 }
 
 function samplePicture(draw, placeholders) {
@@ -931,21 +995,31 @@ function render() {
   const { id, ids, rows } = currentRows();
   paintStatus(rows);
   const token = [
-    state.events.length, state.offset, id, state.block, state.expanded, state.gen,
+    state.series, state.events.length, state.offset, id, state.block, state.expanded, state.gen,
   ].join(":");
   if (token === state.token) return;
   state.token = token;
 
   const select = document.getElementById("run");
-  select.innerHTML = ids.map((runId) => `<option value="${esc(runId)}">${esc(runId)}</option>`).join("");
+  const catalogRun = (state.catalog || []).find((item) => item.id === state.series);
+  select.innerHTML = ids.map((runId) => {
+    const sessionNote = catalogRun && (catalogRun.sessions || []).find((item) => item.run === runId);
+    const label = sessionNote && sessionNote.label;
+    return `<option value="${esc(runId)}">${esc(label ? runId + " · " + label : runId)}</option>`;
+  }).join("");
   if (id) select.value = id;
 
   const session = rows.find((row) => row.type === "session") || {};
-  document.getElementById("session").textContent = sessionLine(session) || "No session recorded yet.";
+  const runNote = catalogRun && (catalogRun.sessions || []).find((item) => item.run === id);
+  const title = (runNote && runNote.label) || (catalogRun && catalogRun.label) || "";
+  const recorded = sessionLine(session);
+  document.getElementById("session").textContent = [title, recorded].filter(Boolean).join("  ·  ")
+    || "No session recorded yet.";
   const note = document.getElementById("note");
-  if (session.note) {
+  const written = (runNote && runNote.comment) || (catalogRun && catalogRun.comment) || session.note;
+  if (written) {
     note.hidden = false;
-    note.textContent = session.note;
+    note.textContent = written;
   } else {
     note.hidden = true;
   }
@@ -983,9 +1057,9 @@ function render() {
     genImg.hidden = true;
     genImg.removeAttribute("src");
     delete genImg.dataset.src;
-    attachSheetCrops("/sheets/" + encodeURIComponent(chosen.sheet), genLines);
+    attachSheetCrops(sheetUrl(chosen.sheet), genLines);
   } else if (chosen && chosen.sheet && !piecewise) {
-    const next = "/sheets/" + encodeURIComponent(chosen.sheet);
+    const next = sheetUrl(chosen.sheet);
     genImg.dataset.src = next;
     genImg.src = next;
     genImg.hidden = false;
@@ -1012,7 +1086,7 @@ function render() {
   const img = document.getElementById("sheet");
   const missing = document.getElementById("sheet-missing");
   if (review && review.sheet) {
-    const next = "/sheets/" + encodeURIComponent(review.sheet);
+    const next = sheetUrl(review.sheet);
     if (img.dataset.src !== next) {
       img.dataset.src = next;
       img.src = next;
@@ -1069,7 +1143,7 @@ function render() {
   }).reverse().join("") || `<tr><td colspan="5" class="quiet">No updates yet.</td></tr>`;
   const openDetail = document.querySelector("#update-body .draw-detail");
   if (openDetail && openDetail.dataset.sheet) {
-    attachSheetCrops("/sheets/" + encodeURIComponent(openDetail.dataset.sheet), openDetail);
+    attachSheetCrops(sheetUrl(openDetail.dataset.sheet), openDetail);
   }
 
   requestAnimationFrame(() => drawCharts(rows));
@@ -1154,11 +1228,204 @@ window.addEventListener("resize", () => {
   drawCharts(rows);
 });
 
-async function poll() {
+function when(ts) {
+  if (typeof ts !== "number") return "";
+  const date = new Date(ts * 1000);
+  const pad = (value) => String(value).padStart(2, "0");
+  return date.getFullYear() + "-" + pad(date.getMonth() + 1) + "-" + pad(date.getDate())
+    + " " + pad(date.getHours()) + ":" + pad(date.getMinutes());
+}
+
+function catalogStructure(catalog) {
+  return (catalog || []).map((series) => ({
+    id: series.id,
+    label: series.label,
+    comment: series.comment,
+    sessions: (series.sessions || []).map((session) => ({
+      run: session.run,
+      label: session.label,
+      comment: session.comment,
+      summary: session.summary,
+      ts: session.ts,
+    })),
+  }));
+}
+
+function paintCounts() {
+  for (const series of state.catalog || []) {
+    const node = document.querySelector('[data-count="' + CSS.escape(series.id) + '"]');
+    if (!node) continue;
+    const live = series.live ? " · live" : "";
+    node.textContent = series.updates + " updates" + live;
+  }
+  for (const series of state.catalog || []) {
+    for (const session of series.sessions || []) {
+      const node = document.querySelector(
+        '[data-run-count="' + series.id + "|" + session.run + '"]');
+      if (node) node.textContent = session.updates + " updates";
+    }
+  }
+}
+
+function noteForm(seriesId, runId, label, comment) {
+  const run = runId ? ` data-run="${esc(runId)}"` : "";
+  const labelName = runId ? "What changed" : "Line";
+  const commentName = runId ? "Note" : "About this line";
+  return `<form class="${runId ? "session-form" : "line-form"}" data-series="${esc(seriesId)}"${run}>
+    <span class="field-label">${labelName}</span>
+    <input name="label" maxlength="80" placeholder="${runId ? "Short name for this start" : "Short name for this line"}" value="${esc(label || "")}">
+    <span class="field-label">${commentName}</span>
+    <textarea name="comment" rows="3" maxlength="4000" placeholder="${runId ? "What changed at this start" : "What this line is for"}">${esc(comment || "")}</textarea>
+    <button type="submit">Save</button>
+  </form>`;
+}
+
+function paintLines() {
+  const list = document.getElementById("line-list");
+  const key = JSON.stringify(catalogStructure(state.catalog)) + "|" + state.series + "|" + state.run;
+  if (key === state.lineKey) {
+    paintCounts();
+    return;
+  }
+  if (list.contains(document.activeElement)) {
+    state.linePending = true;
+    paintCounts();
+    return;
+  }
+  state.linePending = false;
+  state.lineKey = key;
+  if (!state.catalog.length) {
+    list.innerHTML = '<p class="quiet">No training logs under samples/ yet.</p>';
+    return;
+  }
+  list.innerHTML = state.catalog.map((series) => {
+    const open = series.id === state.series;
+    const title = series.label || series.id;
+    const sessions = (series.sessions || []).slice().reverse().map((session) => {
+      const picked = open && session.run === state.run;
+      const stamp = when(session.ts);
+      const name = session.label || session.run;
+      return `<div class="session${picked ? " on" : ""}">
+        <button type="button" class="session-head" data-series="${esc(series.id)}" data-run="${esc(session.run)}">
+          <span class="line-name">${esc(name)}</span>
+          <span class="auto">${esc([stamp, session.summary].filter(Boolean).join(" · "))}</span>
+          <span class="line-meta" data-run-count="${esc(series.id + "|" + session.run)}">${session.updates} updates</span>
+        </button>
+        ${open ? noteForm(series.id, session.run, session.label, session.comment) : ""}
+      </div>`;
+    }).join("");
+    return `<article class="line${open ? " on" : ""}">
+      <button type="button" class="line-head" data-series="${esc(series.id)}">
+        <span class="line-name">${esc(title)}</span>
+        <span class="auto">${series.label ? esc(series.id) : ""}</span>
+        <span class="line-meta" data-count="${esc(series.id)}"></span>
+      </button>
+      ${open ? noteForm(series.id, "", series.label, series.comment) + sessions : ""}
+    </article>`;
+  }).join("");
+  paintCounts();
+}
+
+function selectSeries(id, run) {
+  if (state.series === id) {
+    if (run != null && run !== state.run) {
+      state.run = run;
+      state.block = null;
+      state.expanded = null;
+      state.gen = null;
+      state.token = "";
+      state.lineKey = "";
+      render();
+      paintLines();
+    }
+    return;
+  }
+  state.series = id;
+  state.events = [];
+  state.offset = 0;
+  state.run = run;
+  state.block = null;
+  state.expanded = null;
+  state.gen = null;
+  state.words = null;
+  state.token = "";
+  state.lineKey = "";
+  paintLines();
+  poll();
+}
+
+document.getElementById("line-list").addEventListener("click", (event) => {
+  const sessionBtn = event.target.closest(".session-head");
+  if (sessionBtn) {
+    selectSeries(sessionBtn.dataset.series, sessionBtn.dataset.run);
+    return;
+  }
+  const lineBtn = event.target.closest(".line-head");
+  if (lineBtn) selectSeries(lineBtn.dataset.series, null);
+});
+
+document.getElementById("line-list").addEventListener("focusout", () => {
+  if (!state.linePending) return;
+  if (document.getElementById("line-list").contains(document.activeElement)) return;
+  paintLines();
+});
+
+document.getElementById("line-list").addEventListener("submit", async (event) => {
+  const form = event.target.closest("form");
+  if (!form) return;
+  event.preventDefault();
+  const button = form.querySelector("button");
+  button.disabled = true;
   try {
-    const response = await fetch("/api/events?offset=" + state.offset, { cache: "no-store" });
+    const response = await fetch("/api/notes", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        series: form.dataset.series,
+        run: form.dataset.run || "",
+        label: form.querySelector("[name=label]").value,
+        comment: form.querySelector("[name=comment]").value,
+      }),
+    });
+    if (!response.ok) throw new Error(await response.text());
+    state.lineKey = "";
+    await loadCatalog();
+  } catch (err) {
+    document.getElementById("error").textContent = "The note was not saved.";
+  } finally {
+    button.disabled = false;
+  }
+});
+
+let pollTicket = 0;
+
+async function loadCatalog() {
+  const response = await fetch("/api/series", { cache: "no-store" });
+  if (!response.ok) throw new Error(String(response.status));
+  const body = await response.json();
+  state.catalog = body.series || [];
+  if (!state.series && state.catalog.length) state.series = state.catalog[0].id;
+  const structure = JSON.stringify(catalogStructure(state.catalog));
+  paintLines();
+  if (structure !== state.catalogStructure) {
+    state.catalogStructure = structure;
+    state.token = "";
+    render();
+  }
+}
+
+async function poll() {
+  const requested = state.series;
+  const ticket = ++pollTicket;
+  try {
+    const query = "offset=" + state.offset
+      + (requested ? "&series=" + encodeURIComponent(requested) : "");
+    const response = await fetch("/api/events?" + query, { cache: "no-store" });
     if (!response.ok) throw new Error(String(response.status));
     const body = await response.json();
+    if (ticket !== pollTicket) return;
+    if (requested && body.series && body.series !== requested) return;
+    if (!state.series && body.series) state.series = body.series;
     if (body.reset) {
       state.events = [];
       state.token = "";
@@ -1169,13 +1436,19 @@ async function poll() {
     const { rows } = currentRows();
     paintStatus(rows);
     render();
+    paintLines();
   } catch (err) {
     document.getElementById("error").textContent = "The dashboard cannot reach its server.";
   }
 }
 
-poll();
+loadCatalog().then(poll).catch(() => {
+  document.getElementById("error").textContent = "The dashboard cannot reach its server.";
+});
 setInterval(poll, 1000);
+setInterval(() => {
+  loadCatalog().catch(() => {});
+}, 5000);
 </script>
 </body>
 </html>
