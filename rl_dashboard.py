@@ -379,7 +379,7 @@ class Handler(BaseHTTPRequestHandler):
 
     def do_POST(self):
         parsed = urlparse(self.path)
-        if parsed.path == "/api/blind/rank":
+        if parsed.path in {"/api/blind/pick", "/api/blind/undo"}:
             try:
                 length = int(self.headers.get("Content-Length", "0"))
                 if length < 0 or length > 4096:
@@ -387,7 +387,7 @@ class Handler(BaseHTTPRequestHandler):
                 body = json.loads(self.rfile.read(length).decode("utf-8"))
                 if not isinstance(body, dict):
                     raise ValueError("body must be an object")
-                out = rl_blind.rank(body)
+                out = rl_blind.post(parsed.path.rsplit("/", 1)[1], body)
             except (UnicodeDecodeError, json.JSONDecodeError, ValueError) as exc:
                 self._send(400, "text/plain; charset=utf-8", str(exc).encode("utf-8"))
                 return

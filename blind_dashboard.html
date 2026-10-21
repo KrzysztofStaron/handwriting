@@ -7,21 +7,18 @@
 body{font:15px system-ui,sans-serif;margin:0;background:#f6f6f4;color:#222}
 header{display:flex;justify-content:space-between;align-items:center;padding:12px 20px;background:#fff;border-bottom:1px solid #ddd}
 h1{font-size:18px;margin:0}
-main{padding:16px 20px;max-width:1500px;margin:auto}
+main{padding:16px 20px;max-width:1700px;margin:auto}
 .prompt{font-size:20px;margin:8px 0 14px}
-.grid{display:grid;grid-template-columns:1fr 1fr;gap:14px}
-.card{background:#fff;border:1px solid #ddd;border-radius:8px;padding:10px}
-.card img{width:100%;display:block;cursor:zoom-in}
-.card.zoom{grid-column:1/-1}
-.row{display:flex;gap:6px;align-items:center;margin-bottom:8px}
-.lab{font-weight:700;font-size:18px;margin-right:8px}
+.grid{display:grid;grid-template-columns:1fr 1fr;gap:16px}
+.card{background:#fff;border:2px solid #ddd;border-radius:8px;padding:10px;cursor:pointer}
+.card:hover{border-color:#2d6cdf}
+.card img{width:100%;display:block}
+.card .hint{text-align:center;color:#777;margin-top:6px}
+.nav{display:flex;gap:14px;align-items:center;margin:10px 0;flex-wrap:wrap}
+.bar{height:6px;background:#ddd;border-radius:3px;flex:1;min-width:200px}
+.bar div{height:100%;background:#2d6cdf;border-radius:3px}
 button{font:inherit;padding:5px 12px;border:1px solid #bbb;border-radius:6px;background:#fff;cursor:pointer}
-button.on{background:#2d6cdf;color:#fff;border-color:#2d6cdf}
 button:disabled{opacity:.4;cursor:default}
-.nav{display:flex;gap:8px;align-items:center;margin:14px 0;flex-wrap:wrap}
-.dots button{padding:3px 7px;font-size:12px}
-.dots button.done{background:#d9f0dc}
-.dots button.cur{outline:2px solid #2d6cdf}
 table{border-collapse:collapse;background:#fff;margin:10px 0}
 td,th{border:1px solid #ddd;padding:6px 10px;text-align:left}
 .muted{color:#777}
@@ -32,52 +29,47 @@ td,th{border:1px solid #ddd;padding:6px 10px;text-align:left}
 <main id="app">Loading...</main>
 <script>
 const L=["A","B","C","D"];
-let S=null, cur=0, picks={};
+let S=null, busy=false;
 const app=document.getElementById("app");
 const esc=s=>String(s).replace(/[&<>"]/g,c=>({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;"}[c]));
-async function load(){
-  S=await (await fetch("/api/blind")).json();
+async function load(){S=await (await fetch("/api/blind")).json();render()}
+async function post(action,body){
+  if(busy)return; busy=true;
+  try{
+    const res=await fetch("/api/blind/"+action,{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify(body||{})});
+    if(!res.ok){alert(await res.text());await load();return}
+    S=await res.json(); render();
+  }finally{busy=false}
+}
+function pick(side){if(S&&S.current)post("pick",{round:S.current.round,match:S.current.match,winner:side})}
+function undo(){post("undo")}
+function render(){
   if(!S.ready){app.textContent="No sheets yet. Run: uv run --no-sync scripts/blind_generate.py";return}
-  const first=S.rounds.findIndex(r=>!full(S.results[r.round]));
-  cur=first<0?0:first;
-  if(S.done && location.hash!=="#edit"){showReveal();return}
-  show();
-}
-const full=p=>p&&L.every(l=>p[l])&&new Set(L.map(l=>p[l])).size===4;
-function show(){
-  const r=S.rounds[cur];
-  picks=Object.assign({},S.results[r.round]||{});
-  const dots=S.rounds.map((x,i)=>`<button class="${full(S.results[x.round])?"done":""} ${i===cur?"cur":""}" onclick="go(${i})">${x.round}</button>`).join("");
-  const nDone=S.rounds.filter(x=>full(S.results[x.round])).length;
-  app.innerHTML=`<div class="nav"><b>Round ${r.round}/${S.rounds.length}</b><span class="muted">${nDone} ranked, temp ${S.temperature}, ${S.tries} tries per sheet</span><span class="dots">${dots}</span></div>
-  <div class="prompt">Prompt: <b>${esc(r.prompt)}</b></div>
-  <div class="grid">${L.map(l=>`<div class="card" id="c${l}"><div class="row"><span class="lab">${l}</span>${[1,2,3,4].map(p=>`<button data-l="${l}" data-p="${p}" onclick="pick('${l}',${p})">${["1st","2nd","3rd","4th"][p-1]}</button>`).join("")}</div><img src="${r.images[l]}" onclick="this.parentNode.classList.toggle('zoom')"></div>`).join("")}</div>
-  <div class="nav"><button onclick="go(${cur-1})" ${cur===0?"disabled":""}>Previous</button><button id="sub" onclick="submit()">Save and next</button>${S.done?'<button onclick="showReveal()">Reveal results</button>':""}<span class="muted">1st = best. Click a sheet to enlarge it.</span></div>`;
-  paint();
-}
-function pick(l,p){for(const k of L) if(picks[k]===p) delete picks[k]; picks[l]=p; paint()}
-function paint(){
-  document.querySelectorAll("button[data-l]").forEach(b=>b.classList.toggle("on",picks[b.dataset.l]===+b.dataset.p));
-  document.getElementById("sub").disabled=!full(picks);
-}
-function go(i){if(i>=0&&i<S.rounds.length){cur=i;show()}}
-async function submit(){
-  const r=S.rounds[cur];
-  const res=await fetch("/api/blind/rank",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({round:r.round,places:picks})});
-  if(!res.ok){alert(await res.text());return}
-  S=await res.json();
   if(S.done){showReveal();return}
-  const next=S.rounds.findIndex((x,i)=>i>cur&&!full(S.results[x.round]));
-  const any=S.rounds.findIndex(x=>!full(S.results[x.round]));
-  cur=next>=0?next:any; show();
+  const c=S.current;
+  app.innerHTML=`<div class="nav"><b>Prompt ${c.round}/${S.prompts}</b><b>Match ${c.match}/${S.matches}</b><span class="muted">${esc(c.stage)}</span><div class="bar"><div style="width:${100*S.picked/S.total}%"></div></div><span class="muted">${S.picked}/${S.total} picks</span><button onclick="undo()" ${S.can_undo?"":"disabled"}>Undo last pick (U)</button></div>
+  <div class="prompt">Prompt: <b>${esc(c.prompt)}</b></div>
+  <div class="grid">
+    <div class="card" onclick="pick('left')"><img src="${c.images.left}"><div class="hint">Left is better (&larr; or 1)</div></div>
+    <div class="card" onclick="pick('right')"><img src="${c.images.right}"><div class="hint">Right is better (&rarr; or 2)</div></div>
+  </div>`;
 }
+document.addEventListener("keydown",e=>{
+  if(!S||S.done&&e.key!=="u")return;
+  if(e.key==="ArrowLeft"||e.key==="1")pick("left");
+  else if(e.key==="ArrowRight"||e.key==="2")pick("right");
+  else if(e.key==="u"||e.key==="U"||(e.key==="z"&&(e.metaKey||e.ctrlKey)))undo();
+});
+function pct(x){return (100*x).toFixed(0)+"%"}
 function showReveal(){
-  const v=S.reveal;
-  const board=v.leaderboard.map((m,i)=>`<tr><td>${i+1}</td><td><b>${esc(m.model)}</b></td><td>${m.avg_place.toFixed(2)}</td><td>${m.firsts}</td><td>${m.borda}</td></tr>`).join("");
-  const rounds=v.rounds.map(r=>`<tr><td>${r.round}</td><td>${esc(r.prompt)}</td>${L.map(l=>`<td>${l}: ${esc(r.labels[l])} <span class="muted">(${r.places[l]})</span></td>`).join("")}</tr>`).join("");
-  app.innerHTML=`<h2>Leaderboard</h2><table><tr><th>#</th><th>Model</th><th>Avg place</th><th>1st places</th><th>Borda (3/2/1/0)</th></tr>${board}</table>
-  <p><button onclick="location.hash='#edit';cur=0;show()">Edit rankings</button></p>
-  <h2>Per round</h2><table><tr><th>Round</th><th>Prompt</th><th>A</th><th>B</th><th>C</th><th>D</th></tr>${rounds}</table>`;
+  const v=S.reveal, models=v.leaderboard.map(m=>m.model);
+  const board=v.leaderboard.map((m,i)=>`<tr><td>${i+1}</td><td><b>${esc(m.model)}</b></td><td>${m.avg_place.toFixed(2)}</td><td>${m.firsts}</td><td>${m.borda}</td><td>${pct(m.win_rate)} <span class="muted">(${m.wins}/${m.games})</span></td></tr>`).join("");
+  const h2h=`<tr><th>row beat column</th>${models.map(m=>`<th>${esc(m)}</th>`).join("")}</tr>`+models.map(a=>`<tr><th>${esc(a)}</th>${models.map(b=>{const c=(v.head_to_head[a]||{})[b];return a===b?"<td class=muted>-</td>":c?`<td>${pct(c.wins/c.games)} <span class="muted">(${c.wins}/${c.games})</span></td>`:"<td class=muted>no games</td>"}).join("")}</tr>`).join("");
+  const rounds=v.rounds.map(r=>`<tr><td>${r.round}</td><td>${esc(r.prompt)}</td>${[1,2,3,4].map(p=>{const l=L.find(l=>r.places[l]===p);return `<td>${esc(r.labels[l])}</td>`}).join("")}</tr>`).join("");
+  app.innerHTML=`<h2>Leaderboard</h2><table><tr><th>#</th><th>Model</th><th>Avg place</th><th>1st places</th><th>Borda (3/2/1/0)</th><th>Match win rate</th></tr>${board}</table>
+  <p><button onclick="undo()">Undo last pick</button></p>
+  <h2>Head to head</h2><table>${h2h}</table>
+  <h2>Per prompt</h2><table><tr><th>#</th><th>Prompt</th><th>1st</th><th>2nd</th><th>3rd</th><th>4th</th></tr>${rounds}</table>`;
 }
 load();
 </script>
