@@ -74,6 +74,24 @@ def init_start():
     print(json.dumps(meta, indent=2))
 
 
+def init_from_model(path, name):
+    """Copy a named model (and its optimizer sidecar, if any) into samples/rlhf."""
+    ckpt = Path(path).resolve()
+    if not ckpt.is_file():
+        raise SystemExit(f"{ckpt} missing")
+    optim = ckpt.with_name(ckpt.stem + ".optim.pth")
+    DIR.mkdir(parents=True, exist_ok=True)
+    shutil.copy2(ckpt, DIR / "start.pth")
+    if optim.is_file():
+        shutil.copy2(optim, DIR / "start.optim.pth")
+    rel = lambda p: str(p.relative_to(ROOT)) if p.is_relative_to(ROOT) else str(p)
+    meta = {"source_model": name or ckpt.stem, "source_checkpoint": rel(ckpt),
+            "source_optim": rel(optim) if optim.is_file() else None,
+            "copied_at": time.strftime("%Y-%m-%d %H:%M:%S")}
+    (DIR / "meta.json").write_text(json.dumps(meta, indent=2), encoding="utf-8")
+    print(json.dumps(meta, indent=2))
+
+
 def reset():
     """Back to the fresh start copy. Keeps start.pth and meta.json."""
     for name in ("rlhf.pth", "rlhf.optim.pth", "feedback.jsonl", "state.json"):
@@ -127,7 +145,9 @@ class Session:
 
     def pick_prompt(self, source):
         if source == "auto":
-            source = random.choice(["words", "words", "romeo", "fixed"])
+            source = random.choice(self.args.mix.split(","))
+        if source == "novel":
+            return novel_line(self.stoi, max_chars=48), "novel"
         if source == "words" and self.lexicon:
             return word_line(self.lexicon, max_chars=48), "words"
         if source == "fixed":
@@ -329,7 +349,14 @@ def main():
     ap.add_argument("--clip", type=float, default=1.0)
     ap.add_argument("--accumulate", type=int, default=1, help="rounds per optimizer step")
     ap.add_argument("--dict", default="/usr/share/dict/words")
+    ap.add_argument("--init-from", help="copy this .pth (plus .optim.pth) to samples/rlhf/start.pth")
+    ap.add_argument("--name", help="source model name for meta.json with --init-from")
+    ap.add_argument("--mix", default="romeo,romeo,romeo,novel,words,fixed",
+                    help="comma list the auto prompt picks from uniformly: words, romeo, novel, fixed")
     args = ap.parse_args()
+    if args.init_from:
+        init_from_model(args.init_from, args.name)
+        return
     if args.init:
         init_start()
         return
