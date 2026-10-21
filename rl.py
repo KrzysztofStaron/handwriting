@@ -74,7 +74,7 @@ def set_seed(seed):
     torch.manual_seed(seed)
 
 
-def draw_temperatures(count, low, high):
+def draw_temperatures(count, low, high, center=None):
     """Truncated normal on [low, high], centered on the midpoint.
 
     The interval is six standard deviations each side of the midpoint, so the
@@ -91,7 +91,7 @@ def draw_temperatures(count, low, high):
         return []
     if low == high:
         return [low] * count
-    mean = (low + high) / 2.0
+    mean = (low + high) / 2.0 if center is None else float(center)
     sigma = (high - low) / 12.0
     draws = []
     while len(draws) < count:

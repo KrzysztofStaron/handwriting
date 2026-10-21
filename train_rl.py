@@ -178,6 +178,9 @@ def parse_args(argv=None):
                         help="Highest temperature. The default range keeps most drawings near 0.5. "
                              "A root draws one value and forks keep it. "
                              "The log-prob uses that value.")
+    parser.add_argument("--temp-center", type=float, default=None,
+                        help="Center of the temperature normal. Default: midpoint of "
+                             "--temp-min and --temp-max. Spread stays (max-min)/12.")
     parser.add_argument("--sample-every", type=int, default=5,
                         help="Save a sheet of the training prompts every this many updates. "
                              "0 saves none. The fixed review sentence is still drawn at each checkpoint.")
@@ -486,7 +489,7 @@ def beam_stages(model, ref, scorer, optimizer, prompts, stoi, std, device, args,
 
     def draw(count, parents, pen_states, max_steps):
         if parents is None:
-            temperatures = draw_temperatures(count, args.temp_min, args.temp_max)
+            temperatures = draw_temperatures(count, args.temp_min, args.temp_max, args.temp_center)
         else:
             # One temperature per root. A hotter sibling would score worse
             # with TrOCR, and the chunk advantage would credit that gap.
@@ -720,7 +723,7 @@ def beam_stages(model, ref, scorer, optimizer, prompts, stoi, std, device, args,
 def write_review(model, scorer, text, stoi, std, device, args, index, out_dir):
     """Draw the fixed sentence `review_k` times from the weights just saved."""
     print(f"  review {text!r} x {args.review_k}", flush=True)
-    temperatures = draw_temperatures(args.review_k, args.temp_min, args.temp_max)
+    temperatures = draw_temperatures(args.review_k, args.temp_min, args.temp_max, args.temp_center)
     sequences = rollout_batch(
         model, [text] * args.review_k, stoi, device, temperatures, args.sharpen)
     for draw, (seq, temp) in enumerate(zip(sequences, temperatures), start=1):
@@ -793,6 +796,8 @@ def main():
         raise SystemExit("--temp-min and --temp-max must be >= 0")
     if args.temp_max < args.temp_min:
         raise SystemExit("--temp-max must be >= --temp-min")
+    if args.temp_center is not None and not (args.temp_min <= args.temp_center <= args.temp_max):
+        raise SystemExit("--temp-center must lie inside --temp-min..--temp-max")
     if args.temp_max <= 0:
         raise SystemExit("--temp-max must be > 0 so some drawings have a density")
     if args.straightness < 0:
@@ -881,7 +886,7 @@ def main():
     print(f"play beam {args.beam}, tree {tree_bit}   "
           f"dictionary {easy_bit}   novel {args.novel_leaves}   "
           f"checkpoint about every {args.block_minutes:g} min", flush=True)
-    print(f"temperature: normal around {(args.temp_min + args.temp_max) / 2:g}, "
+    print(f"temperature: normal around {(args.temp_min + args.temp_max) / 2 if args.temp_center is None else args.temp_center:g}, "
           f"kept inside {args.temp_min:g} to {args.temp_max:g}",
           flush=True)
     print(f"latest -> {args.save}", flush=True)
@@ -981,6 +986,7 @@ def main():
             "words": 0.0 if args.text else args.words,
             "temperature_min": args.temp_min,
             "temperature_max": args.temp_max,
+            "temperature_center": args.temp_center,
             "temperature_distribution": "normal",
             "sharpen": args.sharpen,
             "kl_coef": args.kl,
