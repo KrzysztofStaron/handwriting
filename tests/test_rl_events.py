@@ -12,7 +12,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-from rl_dashboard import make_server
+from rl_dashboard import make_server, series_record
 from rl_events import EventLog, pack_draws, parse_stdout_log, read_events
 
 LOG = """\
@@ -194,6 +194,77 @@ class DashboardTests(unittest.TestCase):
                     scored = json.load(response)
                 self.assertAlmostEqual(scored["wcer"], 0.25)
                 for path in ("/sheets/secret.txt", "/sheets/..%2Fsecret.txt", "/nope"):
+                    with self.assertRaises(urllib.error.HTTPError) as caught:
+                        urllib.request.urlopen(base + path)
+                    self.assertEqual(caught.exception.code, 404)
+            finally:
+                server.shutdown()
+                server.server_close()
+
+    def test_lines_keep_their_sheets_and_notes(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            one = root / "rl-a"
+            two = root / "rl-b"
+            one.mkdir()
+            two.mkdir()
+            (one / "events.jsonl").write_text(
+                '{"type": "session", "run": "old", "policy": "models/best-4.pth", '
+                '"novel": 0, "words": 1, "resuming": false, "reward": "both"}\n'
+                '{"type": "update", "run": "old"}\n'
+                '{"type": "session", "run": "new", "policy": "models/rl-trocr.pth", "resuming": true}\n'
+                '{"type": "update", "run": "new"}\n',
+                encoding="utf-8",
+            )
+            (one / "run_aliases.json").write_text('{"new": "old"}\n', encoding="utf-8")
+            (two / "events.jsonl").write_text(
+                '{"type": "session", "run": "b1", "policy": "models/best-4.pth", "resuming": false}\n',
+                encoding="utf-8",
+            )
+            (one / "ckpt-0001.png").write_bytes(b"\x89PNG\r\nA")
+            (two / "ckpt-0001.png").write_bytes(b"\x89PNG\r\nB")
+            folded = series_record(one)
+            self.assertEqual([item["run"] for item in folded["sessions"]], ["old"])
+            self.assertEqual(folded["sessions"][0]["updates"], 2)
+            self.assertIn("words only", folded["sessions"][0]["summary"])
+
+            server = make_server(None, 0, root=root)
+            port = server.server_address[1]
+            thread = threading.Thread(target=server.serve_forever, daemon=True)
+            thread.start()
+            try:
+                base = f"http://127.0.0.1:{port}"
+                with urllib.request.urlopen(base + "/api/series") as response:
+                    body = json.load(response)
+                ids = sorted(item["id"] for item in body["series"])
+                self.assertEqual(ids, ["rl-a", "rl-b"])
+                request = urllib.request.Request(
+                    base + "/api/notes",
+                    data=json.dumps({
+                        "series": "rl-a",
+                        "run": "old",
+                        "label": "words only",
+                        "comment": "Novel and the play are off.",
+                    }).encode("utf-8"),
+                    headers={"Content-Type": "application/json"},
+                )
+                with urllib.request.urlopen(request) as response:
+                    saved = json.load(response)
+                self.assertEqual(saved["sessions"][0]["label"], "words only")
+                self.assertEqual(saved["sessions"][0]["comment"], "Novel and the play are off.")
+                with urllib.request.urlopen(base + "/api/series") as response:
+                    again = json.load(response)
+                listed = next(item for item in again["series"] if item["id"] == "rl-a")
+                self.assertEqual(listed["sessions"][0]["label"], "words only")
+                with urllib.request.urlopen(base + "/api/events?series=rl-b") as response:
+                    events = json.load(response)
+                self.assertEqual(events["series"], "rl-b")
+                self.assertEqual(events["events"][0]["run"], "b1")
+                with urllib.request.urlopen(base + "/sheets/rl-a/ckpt-0001.png") as response:
+                    self.assertTrue(response.read().endswith(b"A"))
+                with urllib.request.urlopen(base + "/sheets/rl-b/ckpt-0001.png") as response:
+                    self.assertTrue(response.read().endswith(b"B"))
+                for path in ("/sheets/ckpt-0001.png", "/sheets/rl-a/../rl-b/ckpt-0001.png", "/api/events?series=../rl-b"):
                     with self.assertRaises(urllib.error.HTTPError) as caught:
                         urllib.request.urlopen(base + path)
                     self.assertEqual(caught.exception.code, 404)
