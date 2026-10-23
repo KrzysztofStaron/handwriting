@@ -1,0 +1,314 @@
+{
+ "fps": 30,
+ "rate": 10,
+ "total": 1350,
+ "morph": {
+  "start": 40,
+  "mid": 49,
+  "end": 58
+ },
+ "shots": [
+  {
+   "id": "S1",
+   "from": 0,
+   "duration": 105,
+   "events": [
+    {
+     "key": "s1",
+     "start": 12
+    }
+   ]
+  },
+  {
+   "id": "S2",
+   "from": 105,
+   "duration": 75,
+   "events": [
+    {
+     "key": "s2",
+     "start": 8
+    }
+   ]
+  },
+  {
+   "id": "S3",
+   "from": 180,
+   "duration": 135,
+   "events": [
+    {
+     "key": "s3a",
+     "start": 8
+    },
+    {
+     "key": "s3b",
+     "start": 90
+    }
+   ]
+  },
+  {
+   "id": "S4",
+   "from": 315,
+   "duration": 150,
+   "events": [
+    {
+     "key": "s4a",
+     "start": 8
+    },
+    {
+     "key": "s4b",
+     "start": 100
+    }
+   ]
+  },
+  {
+   "id": "S5",
+   "from": 465,
+   "duration": 60,
+   "events": [
+    {
+     "key": "s5",
+     "start": 6
+    }
+   ]
+  },
+  {
+   "id": "S6",
+   "from": 525,
+   "duration": 180,
+   "events": [
+    {
+     "key": "s6",
+     "start": 6
+    },
+    {
+     "key": "cons",
+     "start": 66
+    },
+    {
+     "key": "cons",
+     "start": 69
+    },
+    {
+     "key": "cons",
+     "start": 72
+    },
+    {
+     "key": "cons",
+     "start": 75
+    },
+    {
+     "key": "cons",
+     "start": 78
+    },
+    {
+     "key": "cons",
+     "start": 81
+    },
+    {
+     "key": "cons",
+     "start": 84
+    },
+    {
+     "key": "cons",
+     "start": 87
+    },
+    {
+     "key": "cons",
+     "start": 90
+    },
+    {
+     "key": "cons",
+     "start": 93
+    },
+    {
+     "key": "cons",
+     "start": 96
+    },
+    {
+     "key": "cons",
+     "start": 99
+    },
+    {
+     "key": "cons",
+     "start": 102
+    },
+    {
+     "key": "cons",
+     "start": 105
+    },
+    {
+     "key": "cons",
+     "start": 108
+    },
+    {
+     "key": "cons",
+     "start": 111
+    },
+    {
+     "key": "cons",
+     "start": 114
+    },
+    {
+     "key": "cons",
+     "start": 117
+    },
+    {
+     "key": "cons",
+     "start": 120
+    },
+    {
+     "key": "cons",
+     "start": 123
+    },
+    {
+     "key": "cons",
+     "start": 126
+    },
+    {
+     "key": "cons",
+     "start": 129
+    }
+   ]
+  },
+  {
+   "id": "S7",
+   "from": 705,
+   "duration": 210,
+   "events": [
+    {
+     "key": "s7",
+     "start": 6
+    },
+    {
+     "key": "scary00",
+     "start": 66
+    },
+    {
+     "key": "scary01",
+     "start": 69
+    },
+    {
+     "key": "scary02",
+     "start": 72
+    },
+    {
+     "key": "scary03",
+     "start": 75
+    },
+    {
+     "key": "scary04",
+     "start": 78
+    },
+    {
+     "key": "scary05",
+     "start": 81
+    },
+    {
+     "key": "scary06",
+     "start": 84
+    },
+    {
+     "key": "scary07",
+     "start": 87
+    },
+    {
+     "key": "scary08",
+     "start": 90
+    },
+    {
+     "key": "scary09",
+     "start": 93
+    },
+    {
+     "key": "scary10",
+     "start": 96
+    },
+    {
+     "key": "scary11",
+     "start": 99
+    },
+    {
+     "key": "scary12",
+     "start": 102
+    },
+    {
+     "key": "scary13",
+     "start": 105
+    },
+    {
+     "key": "scary14",
+     "start": 108
+    },
+    {
+     "key": "scary15",
+     "start": 111
+    },
+    {
+     "key": "scary16",
+     "start": 114
+    },
+    {
+     "key": "scary17",
+     "start": 117
+    },
+    {
+     "key": "scary18",
+     "start": 120
+    },
+    {
+     "key": "scary19",
+     "start": 123
+    },
+    {
+     "key": "scary20",
+     "start": 126
+    },
+    {
+     "key": "scary21",
+     "start": 129
+    },
+    {
+     "key": "scary22",
+     "start": 132
+    },
+    {
+     "key": "scary23",
+     "start": 135
+    }
+   ]
+  },
+  {
+   "id": "S8",
+   "from": 915,
+   "duration": 90,
+   "events": [
+    {
+     "key": "s8",
+     "start": 10
+    }
+   ]
+  },
+  {
+   "id": "S9",
+   "from": 1005,
+   "duration": 120,
+   "events": [
+    {
+     "key": "s9a",
+     "start": 6
+    }
+   ]
+  },
+  {
+   "id": "S10",
+   "from": 1125,
+   "duration": 225,
+   "events": [
+    {
+     "key": "s10",
+     "start": 60
+    }
+   ]
+  }
+ ]
+}
