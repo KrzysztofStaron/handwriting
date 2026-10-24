@@ -18,8 +18,8 @@ sys.path.insert(0, str(ROOT))
 
 import torch  # noqa: E402
 
-from generate import load_model, load_std  # noqa: E402
-from rl import consistency_sheet, rollout_batch, strokes_to_images  # noqa: E402
+from training.generate import load_model, load_std  # noqa: E402
+from training.rl import consistency_sheet, rollout_batch, strokes_to_images  # noqa: E402
 
 MODELS = {
     "consistency1": "models/named/consistency1.pth",

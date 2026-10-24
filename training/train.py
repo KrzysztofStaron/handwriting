@@ -1,8 +1,8 @@
 import os
 import torch
-from model import HandwritingModel, sequence_loss, window_entropy
-from data import get_loader
-from generate import sample, save_plot, save_alignment
+from training.data import get_loader
+from training.generate import sample, save_alignment, save_plot
+from training.model import HandwritingModel, sequence_loss, window_entropy
 
 INIT_CKPT = "models/pre-trained.pth"  # warm-start checkpoint; None = train from scratch
 FREEZE_BACKBONE = False      # True = train only model.fc (output head)

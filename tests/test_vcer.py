@@ -295,8 +295,8 @@ class PromptAndTrainerTests(unittest.TestCase):
             self.assertTrue(set(line) <= alphabet)
 
     def test_recognizer_defaults_to_plain_and_visual_cer(self):
-        import train_rl
-        from rl import blend_string_reward
+        import training.train_rl as train_rl
+        from training.rl import blend_string_reward
         from vcer.reward import VcerReward
         args = train_rl.parse_args([])
         self.assertEqual(args.reward, "both")
@@ -329,7 +329,7 @@ class PromptAndTrainerTests(unittest.TestCase):
         self.assertEqual(args.temp_max, 0.9)
 
     def test_labels_keep_their_order_and_rewards_go_high_to_low(self):
-        import train_rl
+        import training.train_rl as train_rl
         refs = ["beta", "alpha", "beta", "alpha"]
         rewards = [0.2, 0.4, 0.9, 0.1]
         order = train_rl.label_reward_order(refs, rewards)
@@ -340,7 +340,7 @@ class PromptAndTrainerTests(unittest.TestCase):
         import tempfile
         from pathlib import Path
         from PIL import Image
-        import train_rl
+        import training.train_rl as train_rl
         images = [
             Image.new("RGB", (48, 20), "white"),
             Image.new("RGB", (36, 18), "white"),
@@ -370,8 +370,8 @@ class PromptAndTrainerTests(unittest.TestCase):
         import tempfile
         from pathlib import Path
         from PIL import Image
-        import train_rl
-        from rl_events import pack_draws
+        import training.train_rl as train_rl
+        from training.rl_events import pack_draws
         images = [
             Image.new("RGB", (40, 200), "white"),
             Image.new("RGB", (30, 40), "white"),

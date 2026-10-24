@@ -9,13 +9,10 @@ __pycache__/
 # dataset — never goes in the image (std is baked into std.json)
 data/
 
-# training / dev-only + torch serving code (numpy image uses app_np.py + model_np.py)
-train.py
-data.py
-model.py
-generate.py
+# training / dev-only (numpy image uses serve/ only)
+training/
+dashboards/
 app.py
-export_weights.py
 
 # checkpoints — the numpy image serves from weights.npz, not any .pth
 *.pth

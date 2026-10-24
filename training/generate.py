@@ -5,7 +5,7 @@ import math
 import torch
 import numpy as np
 from pathlib import Path
-from model import HandwritingModel, split_params
+from training.model import HandwritingModel, split_params
 
 STD_PATH = Path("std.json")
 

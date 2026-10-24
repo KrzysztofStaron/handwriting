@@ -12,7 +12,7 @@ import re
 import threading
 from pathlib import Path
 
-BLIND_DIR = Path(__file__).resolve().parent / "samples" / "blind"
+BLIND_DIR = Path(__file__).resolve().parents[1] / "samples" / "blind"
 PAGE = Path(__file__).with_name("blind_dashboard.html")
 LABELS = ("A", "B", "C", "D")
 MATCHES = 4

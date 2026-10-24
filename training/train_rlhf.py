@@ -12,10 +12,10 @@ Picks are appended to data/rlhf_prefs.jsonl before the gradient step, so a
 crash during the update still keeps the choice. The same rounds are appended
 to samples/rlhf/events.jsonl for the dashboard:
 
-    uv run python rl_dashboard.py --dir samples/rlhf
+    uv run python -m dashboards.rl_dashboard --dir samples/rlhf
 
-    uv run train_rlhf.py
-    uv run train_rlhf.py --text "hello world" --rounds 10
+    uv run python -m training.train_rlhf
+    uv run python -m training.train_rlhf --text "hello world" --rounds 10
 """
 
 import argparse
@@ -24,9 +24,8 @@ from pathlib import Path
 
 import torch
 
-from generate import default_device, load_std
-from rl_events import EVENTS_NAME, EventLog, pack_draws
-from rl import (
+from training.generate import default_device, load_std
+from training.rl import (
     BASE_CKPT,
     add_policy_args,
     advantages,
@@ -43,6 +42,7 @@ from rl import (
     set_seed,
     strokes_to_images,
 )
+from training.rl_events import EVENTS_NAME, EventLog, pack_draws
 
 
 def default_ckpt():
@@ -115,7 +115,7 @@ def main():
     sheet_dir = Path(args.sheet_dir)
     events_path = sheet_dir / EVENTS_NAME
     print(f"events -> {events_path}", flush=True)
-    print("dashboard -> uv run python rl_dashboard.py --dir samples/rlhf", flush=True)
+    print("dashboard -> uv run python -m dashboards.rl_dashboard --dir samples/rlhf", flush=True)
     accepted = 0
     shown = 0
     log = EventLog(events_path)

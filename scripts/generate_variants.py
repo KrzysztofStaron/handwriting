@@ -12,7 +12,7 @@ import json
 import numpy as np
 from PIL import Image, ImageDraw
 
-from model_np import NumpyHandwritingModel
+from serve.model_np import NumpyHandwritingModel
 from render_drawing_mp4 import (
     BODY,
     CARD,

@@ -6,7 +6,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 import torch
 import numpy as np
 import matplotlib.pyplot as plt
-from generate import sample, load_model
+from training.generate import load_model, sample
 
 TEXTS = [
     "hi",                                            # trivial

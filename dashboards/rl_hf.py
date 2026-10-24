@@ -3,9 +3,9 @@
 A separate process holds the policy in memory (port 8766). The dashboard
 proxies /rlhf and /api/rlhf/* to it.
 
-    uv run --no-sync rl_hf.py --init     # copy the newest rl-words checkpoint to samples/rlhf/start.pth
-    uv run --no-sync rl_hf.py            # serve on 127.0.0.1:8766
-    uv run --no-sync rl_hf.py --reset    # throw away feedback and go back to start.pth
+    uv run --no-sync python -m dashboards.rl_hf --init
+    uv run --no-sync python -m dashboards.rl_hf
+    uv run --no-sync python -m dashboards.rl_hf --reset
 
 Each round draws 4 samples of one prompt. The person picks the best (and
 optionally the worst). Advantages: best +1, worst -1, others 0; with no worst,
@@ -27,18 +27,18 @@ from urllib.parse import urlparse
 
 import torch
 
-from generate import load_std
-from rl import (
+from training.generate import load_std
+from training.rl import (
     draw_temperatures, load_dictionary, load_policy_and_ref, load_prompts,
     reinforce_step, rollout_batch, save_policy, strokes_to_images, word_line,
 )
-from train_rl import load_sidecar, move_optimizer_state, save_sidecar
+from training.train_rl import load_sidecar, move_optimizer_state, save_sidecar
 
-ROOT = Path(__file__).resolve().parent
+ROOT = Path(__file__).resolve().parents[1]
 DIR = ROOT / "samples" / "rlhf"
 SOURCE_DIR = ROOT / "samples" / "rl-words"
 SOURCE_RUN = "20261021-214443"
-PAGE = ROOT / "rlhf_dashboard.html"
+PAGE = Path(__file__).with_name("rlhf_dashboard.html")
 FIXED = [
     "Krzysztof Szymon Serafin Staron",
     "The quick brown fox jumps over the lazy dog.",

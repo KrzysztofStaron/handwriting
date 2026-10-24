@@ -11,57 +11,22 @@ import os
 import sys
 from pathlib import Path
 
-ROOT = Path(__file__).resolve().parent.parent
-HF_REPO = "PanzerBread/handwriting"
+SCRIPTS = Path(__file__).resolve().parent
+ROOT = SCRIPTS.parent
+sys.path.insert(0, str(SCRIPTS))
 
-ARTIFACTS = {
-    "weights.npz": "weights.npz",
-    "stoi.json": "stoi.json",
-    "std.json": "std.json",
-    "models/post-trained.pth": "best-4.pth",
-}
-
-
-def repo_path(name: str) -> Path:
-    return ROOT / name
+from hf_artifacts import HF_REPO, INFERENCE_ARTIFACTS, download_artifacts, repo_path
 
 
 def download_missing() -> list[str]:
-    missing = [path for path in ARTIFACTS if not repo_path(path).exists()]
-    if not missing:
-        return []
-
-    try:
-        from huggingface_hub import hf_hub_download
-    except ImportError as exc:
-        raise SystemExit(
-            "Missing artifacts and huggingface_hub is not installed.\n"
-            "Run: uv sync --extra inference\n"
-            "Then re-run this script."
-        ) from exc
-
-    fetched = []
-    for local_path in missing:
-        remote_name = ARTIFACTS[local_path]
-        dest = repo_path(local_path)
-        dest.parent.mkdir(parents=True, exist_ok=True)
-        print(f"downloading {remote_name} -> {local_path}")
-        downloaded = Path(
-            hf_hub_download(HF_REPO, remote_name, local_dir=str(dest.parent))
-        )
-        if downloaded.name != dest.name:
-            downloaded.replace(dest)
-        elif downloaded != dest:
-            downloaded.replace(dest)
-        fetched.append(local_path)
-    return fetched
+    return download_artifacts(INFERENCE_ARTIFACTS, label="inference artifacts")
 
 
 def verify_numpy() -> int:
     sys.path.insert(0, str(ROOT))
     import numpy as np
 
-    from model_np import NumpyHandwritingModel
+    from serve.model_np import NumpyHandwritingModel
 
     stoi = json.loads(repo_path("stoi.json").read_text(encoding="utf-8"))
     std = json.loads(repo_path("std.json").read_text(encoding="utf-8"))["std"]
@@ -79,7 +44,7 @@ def verify_torch() -> None:
     sys.path.insert(0, str(ROOT))
     import torch
 
-    from generate import default_device, load_model, load_std, sample
+    from training.generate import default_device, load_model, load_std, sample
 
     ckpt = repo_path("models/post-trained.pth")
     if not ckpt.exists():
@@ -98,12 +63,12 @@ def print_next_steps() -> None:
     print("Local inference is ready.")
     print()
     print("Numpy API (matches production):")
-    print("  uv run app_np.py")
+    print("  uv run python -m serve.app_np")
     print("  curl 'http://127.0.0.1:5000/generate?text=hello&temperature=0.5'")
     print("  curl -sN 'http://127.0.0.1:5000/generate/stream?text=hello&temperature=0.5'")
     print()
     print("Torch PNG generation:")
-    print("  uv run generate.py 'hello world' -t 0.5 -o hello.png")
+    print("  uv run python -m training.generate 'hello world' -t 0.5 -o hello.png")
     print("  uv run python scripts/grid_samples.py")
 
 
@@ -113,7 +78,7 @@ def main() -> None:
     if fetched:
         print(f"fetched {len(fetched)} artifact(s) from {HF_REPO}")
 
-    missing = [path for path in ARTIFACTS if not repo_path(path).exists()]
+    missing = [path for path in INFERENCE_ARTIFACTS if not repo_path(path).exists()]
     if missing:
         raise SystemExit(f"still missing: {', '.join(missing)}")
 

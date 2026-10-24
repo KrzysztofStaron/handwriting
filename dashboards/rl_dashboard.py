@@ -4,9 +4,9 @@ By default every directory under samples/ that has an events.jsonl is one
 line. Notes for a line, and for each start inside it, live in that
 directory's notes.json. The page polls once a second.
 
-    uv run python rl_dashboard.py
-    uv run python rl_dashboard.py --dir samples/rl-words
-    uv run python rl_dashboard.py --import-log path/to/train.log --run 2026-10-10 --replace
+    uv run python -m dashboards.rl_dashboard
+    uv run python -m dashboards.rl_dashboard --dir samples/rl-words
+    uv run python -m dashboards.rl_dashboard --import-log path/to/train.log --run 2026-10-10 --replace
 """
 
 import argparse
@@ -21,12 +21,11 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import parse_qs, unquote, urlparse
 
-import rl_blind
 import urllib.error
 import urllib.request
 
-RLHF_URL = "http://127.0.0.1:8766"
-from rl_events import (
+from dashboards import rl_blind
+from training.rl_events import (
     EVENTS_NAME, apply_run_aliases, load_run_aliases, parse_stdout_log, write_events,
 )
 
@@ -391,7 +390,7 @@ class Handler(BaseHTTPRequestHandler):
         except urllib.error.HTTPError as exc:
             self._send(exc.code, exc.headers.get("Content-Type", "application/json"), exc.read())
         except (urllib.error.URLError, OSError):
-            msg = b'{"error": "rlhf server is not running: uv run --no-sync rl_hf.py"}'
+            msg = b'{"error": "rlhf server is not running: uv run --no-sync dashboards/rl_hf.py"}'
             self._send(502, "application/json", msg)
 
     def do_POST(self):

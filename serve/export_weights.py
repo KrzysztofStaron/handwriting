@@ -24,7 +24,7 @@ else:
 try:
     json.load(open("std.json"))
 except FileNotFoundError:
-    from data import load_data
+    from training.data import load_data
     _s, _sent, std = load_data()
     json.dump({"std": std}, open("std.json", "w"))
 

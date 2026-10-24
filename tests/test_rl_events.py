@@ -12,8 +12,8 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-from rl_dashboard import make_server, series_record
-from rl_events import EventLog, pack_draws, parse_stdout_log, read_events
+from dashboards.rl_dashboard import make_server, series_record
+from training.rl_events import EventLog, pack_draws, parse_stdout_log, read_events
 
 LOG = """\
 device: cpu   reward: mps   policy: models/best-4.pth   (base model)

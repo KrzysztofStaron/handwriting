@@ -9,9 +9,12 @@ wheels/
 # Virtual environments
 .venv
 
-# model weights live on Hugging Face (PanzerBread/handwriting), not git
+# model weights + vocab live on Hugging Face (PanzerBread/handwriting), not git
 *.pth
 *.npz
+weights.npz
+stoi.json
+std.json
 *.png
 # keep the comparison images in the repo
 !docs/*.png
@@ -30,9 +33,14 @@ drawing.mp4
 *.mp3
 vocab.txt
 
+# training data on Hugging Face — see data/README.md
+data/*
+!data/README.md
+
 # apps / tools not in the repo
 collector/
 .claude
 collected/
 collected2/
 collected_edge/
+Dockerfile

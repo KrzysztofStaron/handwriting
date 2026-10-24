@@ -16,9 +16,9 @@ import torch
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-from generate import load_model, sample, sample_batch, stop_after_point, stop_rows
-from model import M, HandwritingModel, sequence_loss
-from rl import (
+from training.generate import load_model, sample, sample_batch, stop_after_point, stop_rows
+from training.model import M, HandwritingModel, sequence_loss
+from training.rl import (
     BASE_CKPT,
     advantages,
     apply_temperature,
@@ -126,7 +126,7 @@ def _band_seq(xs, y0, y1):
 class StraightnessTests(unittest.TestCase):
     def test_a_flat_band_scores_zero_and_an_arch_does_not(self):
         import numpy as np
-        from rl import line_straightness
+        from training.rl import line_straightness
         xs = np.linspace(0, 400, 48)
         flat = line_straightness(_band_seq(xs, 0.0, 10.0), std=1.0)
         mild = line_straightness(_band_seq(xs, 0.002 * xs, 10 + 0.002 * xs), std=1.0)
@@ -146,7 +146,7 @@ class StraightnessTests(unittest.TestCase):
         self.assertEqual(deep, 1.0)
 
     def test_word_gap_penalty_ignores_a_small_wobble_and_gaps_inside_words(self):
-        from rl import spacing_inconsistency
+        from training.rl import spacing_inconsistency
         even = spacing_inconsistency(
             _words("the old man", (20, 20), letter_gap=3), std=1.0, text="the old man")
         mild = spacing_inconsistency(
@@ -176,7 +176,7 @@ class RewardTests(unittest.TestCase):
         self.assertEqual(cer('say "hi"', "say \u201chi\u201d"), 0.0)
 
     def test_string_reward_charges_a_lookalike_the_full_edit(self):
-        from rl import string_reward
+        from training.rl import string_reward
         value, reward = string_reward("d", "ol")
         self.assertEqual(value, 2.0)
         self.assertAlmostEqual(reward, 0.0)
@@ -188,7 +188,7 @@ class RewardTests(unittest.TestCase):
         self.assertAlmostEqual(partial, 0.8 * (1.0 - 1.0 / 3.0))
 
     def test_blend_reward_splits_plain_and_visual_error(self):
-        from rl import blend_string_reward
+        from training.rl import blend_string_reward
         self.assertAlmostEqual(blend_string_reward(0.0, 0.0), 1.0)
         self.assertAlmostEqual(blend_string_reward(1.0, 0.25), 0.1875)
         self.assertAlmostEqual(blend_string_reward(2.0, 3.0), 0.0)
@@ -332,7 +332,7 @@ class RenderTests(unittest.TestCase):
 
 class ScorerTests(unittest.TestCase):
     def test_score_maps_cer_without_loading_trocr(self):
-        from rl import TrocrScorer
+        from training.rl import TrocrScorer
         scorer = TrocrScorer.__new__(TrocrScorer)
         scorer.kind = "linear"
         scorer.tau = 0.1
@@ -345,7 +345,7 @@ class ScorerTests(unittest.TestCase):
 
     def test_confidence_is_the_geometric_mean_of_chosen_tokens(self):
         import torch
-        from rl import mix_confidence, token_confidence
+        from training.rl import mix_confidence, token_confidence
         # Vocab of 2. Token 1 is certain in the first step and a coin flip in the second.
         sure = torch.tensor([[0.0, 20.0]])
         coin = torch.tensor([[0.0, 0.0]])
@@ -366,7 +366,7 @@ class ScorerTests(unittest.TestCase):
         self.assertAlmostEqual(mix_confidence(0.5, 1.0, 0.2), 0.6)
 
     def test_score_mixes_in_a_stashed_confidence(self):
-        from rl import TrocrScorer
+        from training.rl import TrocrScorer
         scorer = TrocrScorer.__new__(TrocrScorer)
         scorer.kind = "linear"
         scorer.tau = 0.1
@@ -396,7 +396,7 @@ class ScorerTests(unittest.TestCase):
 
 class CheckpointTests(unittest.TestCase):
     def test_next_index_ignores_optimizer_sidecars(self):
-        from train_rl import next_checkpoint_index
+        from training.train_rl import next_checkpoint_index
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
             (root / "ckpt-0002.pth").write_bytes(b"w")
@@ -405,7 +405,7 @@ class CheckpointTests(unittest.TestCase):
             self.assertEqual(next_checkpoint_index(root), 3)
 
     def test_run_alias_keeps_a_resume_on_the_earlier_series(self):
-        from rl_events import apply_run_aliases, load_run_aliases
+        from training.rl_events import apply_run_aliases, load_run_aliases
         events = [
             {"run": "20261019-235110", "type": "update", "update": 2552},
             {"run": "20261020-001005", "type": "update", "update": 2553},
@@ -419,7 +419,7 @@ class CheckpointTests(unittest.TestCase):
             self.assertEqual(load_run_aliases(Path(tmp) / "missing"), {})
 
     def test_re_run_uses_latest_weights_when_present(self):
-        from train_rl import default_policy_ckpt
+        from training.train_rl import default_policy_ckpt
         with tempfile.TemporaryDirectory() as tmp:
             latest = Path(tmp) / "rl-trocr.pth"
             self.assertEqual(default_policy_ckpt(latest), "models/best-4.pth")
@@ -427,7 +427,7 @@ class CheckpointTests(unittest.TestCase):
             self.assertEqual(default_policy_ckpt(latest), str(latest))
 
     def test_recognizer_uses_mps_while_the_sampler_stays_on_cpu(self):
-        from train_rl import choose_devices
+        from training.train_rl import choose_devices
         self.assertEqual(choose_devices(None, None, False, True), ("cpu", "mps"))
         self.assertEqual(choose_devices(None, None, True, False), ("cuda", "cuda"))
         self.assertEqual(choose_devices(None, None, False, False), ("cpu", "cpu"))
@@ -435,7 +435,7 @@ class CheckpointTests(unittest.TestCase):
         self.assertEqual(choose_devices("cpu", "cpu", False, True), ("cpu", "cpu"))
 
     def test_review_sentence_sticks_for_the_run(self):
-        from train_rl import resolve_review_text, write_json
+        from training.train_rl import resolve_review_text, write_json
         stoi = {ch: i for i, ch in enumerate("the old man")}
         with tempfile.TemporaryDirectory() as tmp:
             path = Path(tmp) / "run.json"
@@ -666,7 +666,7 @@ class BeamTests(unittest.TestCase):
             beam_factors(0)
 
     def test_a_line_averages_every_generation(self):
-        import train_rl
+        import training.train_rl as train_rl
         stats = train_rl.summarize_line([
             {"loss": 1.0, "kl": 2.0, "used": 1, "grad": 0.5, "stepped": True},
             {"loss": 3.0, "kl": 6.0, "used": 3, "grad": 1.5, "stepped": False},
@@ -891,7 +891,7 @@ class BeamTests(unittest.TestCase):
         self.assertEqual([flat_adv[id(item)] for item in flat], [-1.0, 1.0])
 
     def test_misread_characters_take_a_penalty_on_their_pen_steps(self):
-        from rl import _normalize_indexed
+        from training.rl import _normalize_indexed
 
         samples = [
             "abcd", "abXd", "abd", "", "hello:", "hello :", "a  b",
@@ -998,8 +998,8 @@ class BeamTests(unittest.TestCase):
         self.assertLessEqual(easy, 8)
 
     def test_a_fork_scores_only_the_finished_lines(self):
-        import generate
-        import train_rl
+        import training.generate as generate
+        import training.train_rl as train_rl
         from types import SimpleNamespace
 
         calls = []
@@ -1132,8 +1132,8 @@ class BeamTests(unittest.TestCase):
         self.assertEqual([item["temperature"] for item in leaves], [0.2, 0.2, 0.5, 0.5])
 
     def test_a_novel_exact_read_is_cloned_and_the_misses_are_left_out(self):
-        import generate
-        import train_rl
+        import training.generate as generate
+        import training.train_rl as train_rl
         from types import SimpleNamespace
 
         calls = []
@@ -1203,8 +1203,8 @@ class BeamTests(unittest.TestCase):
         self.assertTrue(all(item.get("skip") == "rejected" for item in rollouts[1:]))
 
     def test_a_dictionary_line_is_a_few_separate_drawings(self):
-        import generate
-        import train_rl
+        import training.generate as generate
+        import training.train_rl as train_rl
         from types import SimpleNamespace
 
         calls = []
@@ -1263,7 +1263,7 @@ class BeamTests(unittest.TestCase):
         self.assertEqual(stages[0][9], "words")
 
     def test_one_step_applies_the_accumulated_gradient(self):
-        import train_rl
+        import training.train_rl as train_rl
 
         class Tiny(torch.nn.Module):
             def __init__(self):

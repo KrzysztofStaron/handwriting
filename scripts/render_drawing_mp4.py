@@ -14,7 +14,7 @@ import subprocess
 import numpy as np
 from PIL import Image, ImageDraw, ImageFont
 
-from model_np import NumpyHandwritingModel
+from serve.model_np import NumpyHandwritingModel
 
 LINES = [
     "Hello",

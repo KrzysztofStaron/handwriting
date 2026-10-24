@@ -33,7 +33,7 @@ from glob import glob
 
 import numpy as np
 
-from data import load_data, build_vocab
+from training.data import build_vocab, load_data
 from import_collected import file_to_array
 
 OUT = Path("data/dataset.npz")

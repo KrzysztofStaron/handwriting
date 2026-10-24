@@ -22,7 +22,8 @@ COPY --from=builder /venv /venv
 WORKDIR /app
 # numpy serving backend: app + numpy model + exported weights/vocab/norm. No torch,
 # no .pth, no dataset, no matplotlib.
-COPY app_np.py model_np.py weights.npz stoi.json std.json ./
+COPY serve/ ./serve/
+COPY weights.npz stoi.json std.json ./
 
 # run as non-root
 RUN useradd --create-home appuser && chown -R appuser /app
@@ -33,4 +34,4 @@ EXPOSE 8080
 # master before accepting connections, so "port open" == "model ready" (clean
 # warmup signal). A few threads let health/startup probes be served while a
 # generation runs; the model's own _lock still serialises actual inference.
-CMD ["sh", "-c", "exec gunicorn -b :$PORT --workers 1 --threads 8 --timeout 120 --preload app_np:app"]
+CMD ["sh", "-c", "exec gunicorn -b :$PORT --workers 1 --threads 8 --timeout 120 --preload serve.app_np:app"]

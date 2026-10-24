@@ -97,32 +97,32 @@ The serving backend is a hand-ported numpy reimplementation of the forward pass 
 uv sync
 
 # generate a sample (torch)
-uv run generate.py
+uv run python -m training.generate
 
 # run the numpy API server
-uv run app_np.py
+uv run python -m serve.app_np
 # → http://127.0.0.1:5000
 
 # generate a comparison grid
 uv run python scripts/grid_samples.py
 ```
 
-Weights live on Hugging Face ([PanzerBread/handwriting](https://huggingface.co/PanzerBread/handwriting)), not in this repo. Fetch them before running:
+Weights and training data live on Hugging Face ([PanzerBread/handwriting](https://huggingface.co/PanzerBread/handwriting)), not in this repo:
 
 ```bash
-uv pip install "huggingface_hub[cli]"
-hf download PanzerBread/handwriting weights.npz stoi.json std.json --local-dir .
+uv sync --extra inference
+uv run python scripts/setup_inference.py   # weights.npz, stoi.json, std.json, models/post-trained.pth
+uv run python scripts/fetch_data.py        # data/strokes.npy, sentences, Romeo prompts, QA json
 ```
 
 ### Training
 
 ```bash
-# needs the IAM On-Line Handwriting Dataset in data/
-uv run train.py
+uv run python -m training.train
 # saves checkpoints to models/post-trained.pth
 
 # export for serving
-uv run export_weights.py
+uv run python -m serve.export_weights
 # models/post-trained.pth → weights.npz + stoi.json
 ```
 
@@ -157,11 +157,11 @@ A dictionary line is a regression check: 4 to 8 separate drawings, on about 10% 
 
 ```bash
 uv sync --extra rl          # transformers, for the recognizer stage
-uv run train_rl.py          # ~10 min of updates, then a checkpoint
+uv run python -m training.train_rl          # ~10 min of updates, then a checkpoint
                             # models/rl-trocr.pth is the latest; re-run resumes it
                             # samples/rl/ckpt-NNNN.png is 10 draws of one fixed sentence
                             # --ckpt samples/rl/ckpt-0003.pth continues from that one
-uv run train_rlhf.py        # writes models/rl-human.pth, appends data/rlhf_prefs.jsonl
+uv run python -m training.train_rlhf        # writes models/rl-human.pth, appends data/rlhf_prefs.jsonl
 ```
 
 `train_rlhf.py` resumes from `models/rl-human.pth` if it exists, otherwise from `models/rl-trocr.pth`, otherwise from the base model. The KL anchor stays `models/best-4.pth`.
@@ -171,33 +171,34 @@ uv run train_rlhf.py        # writes models/rl-human.pth, appends data/rlhf_pref
 ## Repo layout
 
 ```
-model.py              # PyTorch model (training)
-model_np.py           # numpy forward pass (serving)
-app_np.py             # Flask API (deployed)
-train.py              # supervised training loop
-train_rl.py           # post-train on a TrOCR-Large CER reward
-train_rlhf.py         # post-train on a human best-of-3 pick
-rl.py                 # CER reward, trajectory log-prob, REINFORCE
-generate.py           # sample from a checkpoint
-export_weights.py     # .pth → weights.npz for serving
-data.py               # dataset + dataloader
+serve/                # production numpy API
+  app_np.py           #   Flask API (deployed)
+  model_np.py         #   numpy forward pass
+  export_weights.py   #   .pth → weights.npz for serving
+
+training/             # torch training + RL
+  model.py            #   Graves LSTM + MDN
+  data.py             #   dataset + dataloader
+  generate.py         #   sample from a checkpoint
+  train.py            #   supervised training loop
+  train_rl.py         #   TrOCR-Large reward post-training
+  train_rlhf.py       #   human best-of-3 post-training
+  rl.py               #   reward, log-prob, REINFORCE
+  rl_events.py        #   dashboard event log format
+
+dashboards/           # local RL / vCER / blind UIs
+  rl_dashboard.py     #   main trainer dashboard (:8765)
+  rl_hf.py            #   human-feedback server (:8766)
+  rl_blind.py         #   blind comparison sheets
+  *.html              #   static pages for the servers above
+
+vcer/                 # visual CER table + reward
+scripts/              # dev / demo tools
+docs/                 # images, deployment notes, dev logs
 Dockerfile            # slim numpy image, no torch
 
 models/               # checkpoints (gitignored)
-  best-4.pth          #   base model, not overwritten by post-training
-  rl-trocr.pth        #   recognizer-reward RL
-  rl-human.pth        #   human best-of-3 RL
-
-scripts/              # dev / demo tools
-  grid_samples.py     #   sample grid across texts + temps
-  generate_variants.py#   variant PNGs for video picking
-  render_drawing_mp4.py#  animated MP4 from streamed inference
-  import_collected.py #   canvas JSON → numpy
-  export_dataset.py   #   merge sources → data/dataset.npz
-  rebuild_dataset.py  #   rebuild with QA rejections
-  iam_helper.py       #   review-tool helper
-
-docs/                 # images, deployment notes, dev logs
+data/                 # IAM + prompts (Hugging Face, not git)
 ```
 
 ---

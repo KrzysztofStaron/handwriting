@@ -18,7 +18,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 import os
 import numpy as np
-from data import load_data, build_vocab
+from training.data import build_vocab, load_data
 
 OUT = "data/dataset.npz"
 COLLECTED = "collected_strokes.npz"

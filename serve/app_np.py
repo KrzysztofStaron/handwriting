@@ -14,7 +14,7 @@ from pathlib import Path
 import numpy as np
 from flask import Flask, Response, jsonify, request
 
-from model_np import NumpyHandwritingModel
+from serve.model_np import NumpyHandwritingModel
 
 MAX_TEXT_LEN = 100
 TEMP_MIN, TEMP_MAX = 0.0, 2.0

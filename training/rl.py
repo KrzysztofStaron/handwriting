@@ -34,9 +34,9 @@ from pathlib import Path
 import numpy as np
 import torch
 
-from data import collate
-from generate import _row_state, load_model, sample_batch, stack_states
-from model import split_params
+from training.data import collate
+from training.generate import _row_state, load_model, sample_batch, stack_states
+from training.model import split_params
 from vcer.reward import tighten_punctuation
 
 BASE_CKPT = "models/best-4.pth"

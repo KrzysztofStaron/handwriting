@@ -26,12 +26,12 @@ any numbered checkpoint. models/best-4.pth is the KL anchor and is never written
 Each update is also appended to samples/rl/events.jsonl. The local dashboard
 reads that file while training runs:
 
-    uv run python rl_dashboard.py
+    uv run python -m dashboards.rl_dashboard
 
     uv sync --extra rl
-    uv run train_rl.py
-    uv run train_rl.py --ckpt samples/rl/ckpt-0003.pth
-    uv run train_rl.py --ckpt models/best-4.pth   # start over from the base model
+    uv run python -m training.train_rl
+    uv run python -m training.train_rl --ckpt samples/rl/ckpt-0003.pth
+    uv run python -m training.train_rl --ckpt models/best-4.pth   # start over from the base model
 """
 
 import argparse
@@ -44,8 +44,8 @@ from pathlib import Path
 
 import torch
 
-from generate import load_std
-from rl import (
+from training.generate import load_std
+from training.rl import (
     BASE_CKPT,
     TrocrScorer,
     add_policy_args,
@@ -74,7 +74,7 @@ from rl import (
     strokes_to_images,
     rollout_batch,
 )
-from rl_events import EVENTS_NAME, EventLog, pack_draws
+from training.rl_events import EVENTS_NAME, EventLog, pack_draws
 
 THIN_GLYPHS = set("il1.'")
 LATEST_NAME = "rl-trocr.pth"
@@ -464,7 +464,7 @@ def beam_stages(model, ref, scorer, optimizer, prompts, stoi, std, device, args,
     read is the demonstration and the search stops there. TrOCR scores
     finished lines only. The chunks of one line share a single optimizer step.
     """
-    from generate import sample_batch
+    from training.generate import sample_batch
 
     # A pinned --text stays as given. Otherwise some lines are ten short
     # random words, and some are dictionary words, so the policy also
@@ -806,7 +806,7 @@ def main():
     global QUIET
     QUIET = args.quiet
     if QUIET:
-        import generate
+        import training.generate as generate
         generate.VERBOSE = False
     if args.temp_min < 0 or args.temp_max < 0:
         raise SystemExit("--temp-min and --temp-max must be >= 0")
@@ -910,7 +910,7 @@ def main():
           flush=True)
     events_path = out_dir / EVENTS_NAME
     print(f"events -> {events_path}", flush=True)
-    print("dashboard -> uv run python rl_dashboard.py", flush=True)
+    print("dashboard -> uv run python -m dashboards.rl_dashboard", flush=True)
 
     log = None
     session_open = False
